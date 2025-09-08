@@ -13,7 +13,11 @@ Compare the aggregated sentiment signal to the actual Q2 2021 earnings results, 
 
 Resources:
 1. Academic Torrents:
-   Link: https://academictorrents.com/details/ba051999301b109eab37d16f027b3f49ade2de13
-   Content: 
-   Tool: 
-3. 
+   (1) Link: https://academictorrents.com/details/ba051999301b109eab37d16f027b3f49ade2de13 
+   (2) Tool: Transmission-Qt is required for data download (windows)
+2. Alpha Vantage API:
+   (1) Link: https://www.alphavantage.co/documentation/
+   (2) Function: Earnings History
+
+Tech Stack:
+1. Python: 
