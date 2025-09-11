@@ -1,3 +1,11 @@
+<!--
+ * @Author: YuxinYY yuxine628@gmail.com
+ * @Date: 2025-09-08 12:13:31
+ * @LastEditors: YuxinYY yuxine628@gmail.com
+ * @LastEditTime: 2025-09-11 02:19:53
+ * @FilePath: \reddit\README.md
+ * @Description: 这是默认设置,请设置`customMade`, 打开koroFileHeader查看配置 进行设置: https://github.com/OBKoro1/koro1FileHeader/wiki/%E9%85%8D%E7%BD%AE
+-->
 # Pre-earnings-Social-Media-Sentiment-Accuracy
 Uses ML methods to conduct sentiment analysis of reddit submission and comment data and see whether the average sentiment towards a stock matches with its actual earnings outcome.
 
@@ -20,5 +28,5 @@ Resources:
    (2) Function: Earnings History
 
 Tech Stack:
-1. Python: 
-   (1) fuzzywuzzy: string matching
+1. fuzzymuzzy: fuzzy string match package
+2. BERT: sentiment analysis framwork
