@@ -21,3 +21,4 @@ Resources:
 
 Tech Stack:
 1. Python: 
+   (1) fuzzywuzzy: string matching
