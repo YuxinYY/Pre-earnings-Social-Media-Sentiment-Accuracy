@@ -2,7 +2,7 @@
  * @Author: YuxinYY yuxine628@gmail.com
  * @Date: 2025-09-08 12:13:31
  * @LastEditors: YuxinYY yuxine628@gmail.com
- * @LastEditTime: 2025-09-11 02:19:53
+ * @LastEditTime: 2025-09-13 19:38:01
  * @FilePath: \reddit\README.md
  * @Description: 这是默认设置,请设置`customMade`, 打开koroFileHeader查看配置 进行设置: https://github.com/OBKoro1/koro1FileHeader/wiki/%E9%85%8D%E7%BD%AE
 -->
@@ -29,4 +29,5 @@ Resources:
 
 Tech Stack:
 1. fuzzymuzzy: fuzzy string match package
-2. BERT: sentiment analysis framwork
+2. BERT: sentiment analysis framework; 
+   Model: ahmedrachid/FinancialBERT-Sentiment-Analysis
