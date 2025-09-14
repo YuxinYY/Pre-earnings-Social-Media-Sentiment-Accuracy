@@ -2,7 +2,7 @@
  * @Author: YuxinYY yuxine628@gmail.com
  * @Date: 2025-09-08 12:13:31
  * @LastEditors: YuxinYY yuxine628@gmail.com
- * @LastEditTime: 2025-09-14 11:31:44
+ * @LastEditTime: 2025-09-14 11:32:51
  * @FilePath: \reddit\README.md
  * @Description: 这是默认设置,请设置`customMade`, 打开koroFileHeader查看配置 进行设置: https://github.com/OBKoro1/koro1FileHeader/wiki/%E9%85%8D%E7%BD%AE
 -->
@@ -20,18 +20,18 @@ Compare the aggregated sentiment signal to the actual Q2 2021 earnings results, 
 
 
 Resources:
-1. Academic Torrents:
-   (1) Link: https://academictorrents.com/details/ba051999301b109eab37d16f027b3f49ade2de13 
+1. Academic Torrents:\
+   (1) Link: https://academictorrents.com/details/ba051999301b109eab37d16f027b3f49ade2de13 \
    (2) Tool: Transmission-Qt is required for data download (windows)
 2. Alpha Vantage API:
-   (1) Link: https://www.alphavantage.co/documentation/
+   (1) Link: https://www.alphavantage.co/documentation/ \
    (2) Function: Earnings History
 
 Tech Stack:
 1. Data & Preprocessing \
 **Pandas & Numpy** Data manipulation \
 **fuzzymuzzy** string match and text analysis \
-**BERT** pre-trained (financialBERT) sentiment analysis framework \
+**BERT** pre-trained (financialBERT) sentiment analysis framework 
 
 2. Machine Learning
 **PyTorch** deep learning framework for neural network
