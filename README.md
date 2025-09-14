@@ -2,7 +2,7 @@
  * @Author: YuxinYY yuxine628@gmail.com
  * @Date: 2025-09-08 12:13:31
  * @LastEditors: YuxinYY yuxine628@gmail.com
- * @LastEditTime: 2025-09-14 11:28:43
+ * @LastEditTime: 2025-09-14 11:31:44
  * @FilePath: \reddit\README.md
  * @Description: 这是默认设置,请设置`customMade`, 打开koroFileHeader查看配置 进行设置: https://github.com/OBKoro1/koro1FileHeader/wiki/%E9%85%8D%E7%BD%AE
 -->
@@ -28,10 +28,10 @@ Resources:
    (2) Function: Earnings History
 
 Tech Stack:
-1. Data & Preprocessing
-**Pandas & Numpy** Data manipulation
-**fuzzymuzzy** string match and text analysis
-**BERT** pre-trained (financialBERT) sentiment analysis framework
+1. Data & Preprocessing \
+**Pandas & Numpy** Data manipulation \
+**fuzzymuzzy** string match and text analysis \
+**BERT** pre-trained (financialBERT) sentiment analysis framework \
 
 2. Machine Learning
 **PyTorch** deep learning framework for neural network
