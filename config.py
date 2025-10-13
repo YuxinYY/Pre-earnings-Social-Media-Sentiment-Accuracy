@@ -22,3 +22,5 @@ argparser.add_argument(
     required=True,
     help='Path to your private earnings surprice data (not included due to license). May refer to :https://www.alphavantage.co/documentation/.'
 )
+
+args = argparser.parse_args()
