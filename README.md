@@ -45,3 +45,5 @@ Custom HAN architecture: GRU + Attention mechanisms
 Academic Torrents: https://academictorrents.com/details/ba051999301b109eab37d16f027b3f49ade2de13 \
 Alpha Vantage API: https://www.alphavantage.co/documentation/ (Earnings endpoint) \
 FinBERT: ProsusAI/finbert (Hugging Face)
+
+![The workflow illustration](workflow image.png "Workflow")
