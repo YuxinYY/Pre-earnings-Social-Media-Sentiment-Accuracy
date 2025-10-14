@@ -1,37 +1,47 @@
-<!--
- * @Author: YuxinYY yuxine628@gmail.com
- * @Date: 2025-09-08 12:13:31
- * @LastEditors: YuxinYY yuxine628@gmail.com
- * @LastEditTime: 2025-09-14 11:32:51
- * @FilePath: \reddit\README.md
- * @Description: 这是默认设置,请设置`customMade`, 打开koroFileHeader查看配置 进行设置: https://github.com/OBKoro1/koro1FileHeader/wiki/%E9%85%8D%E7%BD%AE
--->
-# Predicting Earnings Movement with Pre-earnings Social-Media Sentiment
-Uses ML methods to conduct sentiment analysis of reddit submission and comment data and see whether the average sentiment towards a stock matches with its actual earnings outcome.
+Pipeline Overview
+1. Data Collection
 
-The files consists of three parts:
-1. Data Collection: Loading data from **Academic Torrents** and Filter submission posts and comments between Jun 2021 and Aug 2021 (inclusive) from the following subreddits: r/wallstreetbets, r/stocks, r/Superstonk, r/pennystocks, r/investing.
-2. Data Cleaning & Preprocessing: keep submissions and comments mentioning a specific stock and posted within the pre-announcement window.
-3. Machine Learning:  
-Apply sentiment analysis on the filtered submission posts and comments using a [model to be determined]. Each text is classified into positive or negative sentiment with respect to the mentioned stock. I then aggregate the sentiment scores across the pre-earnings window for each individual stock.
+Reddit Data: r/wallstreetbets submissions and comments (2019-2024) from Academic Torrents
+Earnings Data: Quarterly earnings history via Alpha Vantage API
+Financial Data: Quarterly fundamentals from Compustat (optional enhancement)
 
-4. Analysis:  
-Compare the aggregated sentiment signal to the actual Q2 2021 earnings results, obtained via the **Alpha Vantage EARNINGS API** (https://www.alphavantage.co/documentation/). Specifically, I test whether positive sentiment corresponds to earnings surprises above expectations, and whether negative sentiment corresponds to earnings disappointments. Accuracy, precision/recall, and confusion matrices are reported to evaluate the predictive power of social media sentiment on earnings outcomes.
+2. Data Preprocessing
+
+Ticker Extraction: Match posts to stocks using regex-based ticker detection
+Temporal Alignment: Create 60-day lookback windows before each earnings announcement date
+Daily Aggregation: Combine all posts about a stock per day into daily text sequences
+Time-based Split: Train (2019-2022), Validation (2023), Test (2024)
+
+3. Feature Engineering
+
+Text Vectorization: FinBERT embeddings for each day's aggregated text
+Sequence Construction: 60-day sequences for each earnings event
+Labels: classification (positive v. negative earnings surprise)
+
+4. Model Architecture
+
+BERT Embeddings: Domain-specific financial language model (FinBERT)
+Sequential Modeling: Bi-directional GRU processes
+Temporal Attention: Learns which days matter most for prediction
+Prediction Head: Dense layers output earnings surprise probability
+
+5. Evaluation: tbd
 
 
-Resources:
-1. Academic Torrents:\
-   (1) Link: https://academictorrents.com/details/ba051999301b109eab37d16f027b3f49ade2de13 \
-   (2) Tool: Transmission-Qt is required for data download (windows)
-2. Alpha Vantage API:\
-   (1) Link: https://www.alphavantage.co/documentation/ \
-   (2) Function: Earnings History
+Tech Stack
+Data & Preprocessing
 
-Tech Stack:
-1. Data & Preprocessing \
-**Pandas & Numpy** Data manipulation \
-**fuzzymuzzy** string match and text analysis \
-**BERT** pre-trained (financialBERT) sentiment analysis framework 
+Pandas, NumPy: Data manipulation
+fuzzywuzzy: Ticker matching
+Transformers (Hugging Face): FinBERT embeddings
 
-2. Machine Learning
-**PyTorch** deep learning framework for neural network
+Deep Learning
+
+PyTorch: Neural network framework
+Custom HAN architecture: GRU + Attention mechanisms
+
+Resources
+
+Academic Torrents: https://academictorrents.com/details/ba051999301b109eab37d16f027b3f49ade2de13
+Alpha Vantage API: https://www.alphavantage.co/documentation/ (Earnings endpoint)
+FinBERT: ProsusAI/finbert (Hugging Face)
