@@ -6,8 +6,9 @@ argparser = argparse.ArgumentParser()
 argparser.add_argument(
     '--submissionandcomments_dir',
     type=str,
-    required=True,
-    help='Path to your private text data (not included due to license)'
+    default='data processing/2019-2024_sub&coms.csv'
+    # required=True,
+    # help='Path to your private text data (not included due to license)'
 )
 
 argparser.add_argument(
@@ -19,8 +20,9 @@ argparser.add_argument(
 argparser.add_argument(
     '--eps_surprise_dir',
     type=str,
-    required=True,
-    help='Path to your private earnings surprice data (not included due to license). May refer to :https://www.alphavantage.co/documentation/.'
+    default='earningreleasedatesandsurprises.csv'
+    # required=True,
+    # help='Path to your private earnings surprice data (not included due to license). May refer to :https://www.alphavantage.co/documentation/.'
 )
 
 argparser.add_argument(
@@ -29,4 +31,11 @@ argparser.add_argument(
     default='training/datasets/'
 )
 
+
+
 args = argparser.parse_args()
+# import sys
+# if "__file__" in globals():  # Only parse when run as script, not when imported in notebook
+#     args = argparser.parse_args()
+# else:
+#     args = argparser.parse_args([])  # Parse nothing (prevents Jupyter crash)
