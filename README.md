@@ -1,3 +1,4 @@
+> paper: [Listening to Chaotic Whispers: A Deep Learning Framework for News-oriented Stock Trend Prediction](https://dl.acm.org/doi/abs/10.1145/3159652.3159690)
 **Pipeline Overview**
 1. Data Collection
 
