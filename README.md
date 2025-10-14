@@ -1,4 +1,4 @@
-Pipeline Overview
+**Pipeline Overview**
 1. Data Collection
 
 Reddit Data: r/wallstreetbets submissions and comments (2019-2024) from Academic Torrents
@@ -28,20 +28,20 @@ Prediction Head: Dense layers output earnings surprise probability
 5. Evaluation: tbd
 
 
-Tech Stack
-Data & Preprocessing
+**Tech Stack**
+1. Data & Preprocessing
 
 Pandas, NumPy: Data manipulation
 fuzzywuzzy: Ticker matching
 Transformers (Hugging Face): FinBERT embeddings
 
-Deep Learning
+2. Deep Learning
 
 PyTorch: Neural network framework
 Custom HAN architecture: GRU + Attention mechanisms
 
-Resources
+**Resources**
 
-Academic Torrents: https://academictorrents.com/details/ba051999301b109eab37d16f027b3f49ade2de13
-Alpha Vantage API: https://www.alphavantage.co/documentation/ (Earnings endpoint)
+Academic Torrents: https://academictorrents.com/details/ba051999301b109eab37d16f027b3f49ade2de13 \
+Alpha Vantage API: https://www.alphavantage.co/documentation/ (Earnings endpoint) \
 FinBERT: ProsusAI/finbert (Hugging Face)
