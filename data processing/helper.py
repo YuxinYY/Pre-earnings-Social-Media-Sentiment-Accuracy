@@ -1,5 +1,6 @@
 '''
-this file contains helper functions that makes sure text data can be paired with stocks
+PART I
+this part contains helper functions that makes sure text data can be paired with stocks
 '''
 
 import re
@@ -112,7 +113,7 @@ def analyze_stock_mentions_fast(df_social, stock_patterns, batch_size=10000): # 
         print(f"Processing batch {i//batch_size + 1}/{(total_rows-1)//batch_size + 1}")
         
         for idx, row in batch.iterrows():
-            text = str(row.get('selftext', '')) + ' ' + str(row.get('title', ''))
+            text = str(row.get('selftext', '')) + ' ' + str(row.get('title', '')) + ' '+ str(row.get('body', ''))
             mentions = fast_stock_mentions(text, stock_patterns)  # Use fast version
             
             # Create base record with all essential fields
@@ -134,3 +135,29 @@ def analyze_stock_mentions_fast(df_social, stock_patterns, batch_size=10000): # 
                 results.append(record)
     
     return pd.DataFrame(results)
+
+'''
+PART II
+This part contains helper functions in the training process
+'''
+def create_sequences(row, df_daily, lookback=60): #you may change the look-back period based on needs
+    ticker = row['ticker']
+    earnings_date = pd.to_datetime(row['reportedDate'])
+    
+    # Get date range
+    start_date = earnings_date - pd.Timedelta(days=lookback)
+    end_date = earnings_date - pd.Timedelta(days=1)  # the day before earnings report #note that this is the day when the report comes out, not the date of the fiscal end
+    
+    mask = (
+        (df_daily['ticker'] == ticker) &
+        (df_daily['date'] >= start_date) &
+        (df_daily['date'] <= end_date)
+    )
+    sequence_data = df_daily[mask].sort_values('date')
+    
+    # Handle missing days (days with no posts)
+    date_range = pd.date_range(start_date, end_date, freq='D')
+    sequence_data = sequence_data.set_index('date').reindex(date_range)
+    sequence_data['combined_text'] = sequence_data['combined_text'].fillna('')  # empty string for no posts
+    
+    return sequence_data['combined_text'].tolist()
