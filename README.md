@@ -46,4 +46,4 @@ Academic Torrents: https://academictorrents.com/details/ba051999301b109eab37d16f
 Alpha Vantage API: https://www.alphavantage.co/documentation/ (Earnings endpoint) \
 FinBERT: ProsusAI/finbert (Hugging Face)
 
-![The workflow illustration](workflow image.png "Workflow")
+![The workflow illustration](workflow_image.png "Workflow")
