@@ -21,7 +21,7 @@ argparser.add_argument(
 argparser.add_argument(
     '--eps_surprise_dir',
     type=str,
-    default='nonuploads/earningreleasedatesandsurprises.csv'
+    default='training/datasets/earningreleasedatesandsurprises.csv'
     # required=True,
     # help='Path to your private earnings surprice data (not included due to license). May refer to :https://www.alphavantage.co/documentation/.'
 )
