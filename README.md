@@ -31,6 +31,7 @@ Prediction Head: Dense layers output earnings surprise probability
 
 
 **Tech Stack**
+
 1. Data & Preprocessing
 
 Pandas, NumPy: Data manipulation
@@ -44,15 +45,16 @@ Custom HAN architecture: GRU + Attention mechanisms
 
 **Resources**
 
-Academic Torrents: https://academictorrents.com/details/ba051999301b109eab37d16f027b3f49ade2de13 \
-Alpha Vantage API: https://www.alphavantage.co/documentation/ (Earnings endpoint) \
-FinBERT: ProsusAI/finbert (Hugging Face)
+1. Academic Torrents: https://academictorrents.com/details/ba051999301b109eab37d16f027b3f49ade2de13 \
+2. Alpha Vantage API: https://www.alphavantage.co/documentation/ (Earnings endpoint) \
+3. FinBERT: ProsusAI/finbert (Hugging Face)
 
 ![The workflow illustration](workflow_image.png "Workflow")
 
 
 **To-do s**
-Current issue: data was incomplete and potential class imbalance. \
 
-Finalize training and deloy model. \
-Optimize data preprocessing and fine-tuning.
+1. Current issue: data was incomplete and potential class imbalance. \
+
+2. Finalize training and deloy model. \
+3. Optimize data preprocessing and fine-tuning.
