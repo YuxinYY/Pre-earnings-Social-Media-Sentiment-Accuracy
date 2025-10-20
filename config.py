@@ -6,7 +6,8 @@ argparser = argparse.ArgumentParser()
 argparser.add_argument(
     '--submissionandcomments_dir',
     type=str,
-    default='data processing/2019-2024_sub&coms.csv'
+    default='data processing/2023-2024.csv'
+    
     # required=True,
     # help='Path to your private text data (not included due to license)'
 )
@@ -20,7 +21,7 @@ argparser.add_argument(
 argparser.add_argument(
     '--eps_surprise_dir',
     type=str,
-    default='earningreleasedatesandsurprises.csv'
+    default='nonuploads/earningreleasedatesandsurprises.csv'
     # required=True,
     # help='Path to your private earnings surprice data (not included due to license). May refer to :https://www.alphavantage.co/documentation/.'
 )
@@ -33,7 +34,7 @@ argparser.add_argument(
 
 
 
-args = argparser.parse_args()
+args, unknown = argparser.parse_known_args()
 # import sys
 # if "__file__" in globals():  # Only parse when run as script, not when imported in notebook
 #     args = argparser.parse_args()

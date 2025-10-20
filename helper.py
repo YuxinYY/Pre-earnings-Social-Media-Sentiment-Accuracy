@@ -4,7 +4,11 @@ this part contains helper functions that makes sure text data can be paired with
 '''
 
 import re
+import numpy as np
 import pandas as pd
+import torch
+from concurrent.futures import ProcessPoolExecutor
+import multiprocessing
 
 def create_smart_stock_patterns(df_stocks):
     SKIP_TICKERS = {
@@ -136,9 +140,10 @@ def analyze_stock_mentions_fast(df_social, stock_patterns, batch_size=10000): # 
     
     return pd.DataFrame(results)
 
+
 '''
 PART II
-This part contains helper functions in the training process
+This part contains helper functions in the sequence embedding process
 '''
 def create_sequences(row, df_daily, lookback=60): #you may change the look-back period based on needs
     ticker = row['ticker']
@@ -161,3 +166,14 @@ def create_sequences(row, df_daily, lookback=60): #you may change the look-back 
     sequence_data['combined_text'] = sequence_data['combined_text'].fillna('')  # empty string for no posts
     
     return sequence_data['combined_text'].tolist()
+
+def count_zeros_in_sequence(embedding_seq):
+    #this function checks the distribution of the number of posts in the 60-day look-back window
+    if isinstance(embedding_seq, torch.Tensor):
+        embedding_seq = embedding_seq.numpy()
+    
+    zero_days = 0
+    for day_embedding in embedding_seq:
+        if np.abs(day_embedding).sum() < 0.01:  # Essentially zero
+            zero_days += 1
+    return zero_days
