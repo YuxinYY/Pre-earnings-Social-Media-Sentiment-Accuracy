@@ -1,4 +1,5 @@
 > paper: [Listening to Chaotic Whispers: A Deep Learning Framework for News-oriented Stock Trend Prediction](https://dl.acm.org/doi/abs/10.1145/3159652.3159690)
+
 **Pipeline Overview**
 1. Data Collection
 
@@ -48,3 +49,10 @@ Alpha Vantage API: https://www.alphavantage.co/documentation/ (Earnings endpoint
 FinBERT: ProsusAI/finbert (Hugging Face)
 
 ![The workflow illustration](workflow_image.png "Workflow")
+
+
+**To-do s**
+Current issue: data was incomplete and potential class imbalance. \
+
+Finalize training and deloy model. \
+Optimize data preprocessing and fine-tuning.
