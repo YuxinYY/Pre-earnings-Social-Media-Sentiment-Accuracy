@@ -45,8 +45,8 @@ Custom HAN architecture: GRU + Attention mechanisms
 
 **Resources**
 
-1. Academic Torrents: https://academictorrents.com/details/ba051999301b109eab37d16f027b3f49ade2de13 \
-2. Alpha Vantage API: https://www.alphavantage.co/documentation/ (Earnings endpoint) \
+1. Academic Torrents: https://academictorrents.com/details/ba051999301b109eab37d16f027b3f49ade2de13 
+2. Alpha Vantage API: https://www.alphavantage.co/documentation/ (Earnings endpoint) 
 3. FinBERT: ProsusAI/finbert (Hugging Face)
 
 ![The workflow illustration](workflow_image.png "Workflow")
@@ -54,7 +54,8 @@ Custom HAN architecture: GRU + Attention mechanisms
 
 **To-do s**
 
-1. Current issue: data was incomplete and potential class imbalance. \
+1. Current issue: data was incomplete and potential class imbalance. 
 
-2. Finalize training and deloy model. \
+2. Finalize training and deloy model. 
+
 3. Optimize data preprocessing and fine-tuning.
