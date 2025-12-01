@@ -19,6 +19,18 @@ argparser.add_argument(
 )
 
 argparser.add_argument(
+    '--stocks',
+    type=str,
+    default='stocks.csv'
+)
+
+argparser.add_argument(
+    '--daily_return_nyse',
+    type=str,
+    default='./nonuploads/daily_nyse_return.csv'
+)
+
+argparser.add_argument(
     '--eps_surprise_dir',
     type=str,
     default='training/datasets/earningreleasedatesandsurprises.csv'
@@ -26,7 +38,7 @@ argparser.add_argument(
     # help='Path to your private earnings surprice data (not included due to license). May refer to :https://www.alphavantage.co/documentation/.'
 )
 
-argparser.add_argument(
+argparser.add_argument(#for saving our training and testing datasets
     '--dataset_save_dir',
     type=str,
     default='training/datasets/'
@@ -40,3 +52,4 @@ args, unknown = argparser.parse_known_args()
 #     args = argparser.parse_args()
 # else:
 #     args = argparser.parse_args([])  # Parse nothing (prevents Jupyter crash)
+

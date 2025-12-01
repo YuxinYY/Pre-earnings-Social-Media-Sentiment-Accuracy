@@ -9,171 +9,149 @@ import pandas as pd
 import torch
 from concurrent.futures import ProcessPoolExecutor
 import multiprocessing
+from gliner import GLiNER
+from flashtext import KeywordProcessor
 
-def create_smart_stock_patterns(df_stocks):
-    SKIP_TICKERS = {
-        'A',     # Too common as article
-        'I',     # Too common as pronoun  
-        'AM',    # Common word "am"
-        'AN',    # Common word "an"
-        'AS',    # Common word "as"
-        'AT',    # Common word "at"
-        'BE',    # Common word "be" 
-        'BY',    # Common word "by"
-        'DO',    # Common word "do"
-        'GO',    # Common word "go"
-        'HE',    # Common word "he"
-        'IF',    # Common word "if"
-        'IN',    # Common word "in"
-        'IS',    # Common word "is"
-        'IT',    # Common word "it"
-        'MY',    # Common word "my"
-        'NO',    # Common word "no"
-        'OF',    # Common word "of"
-        'ON',    # Common word "on"
-        'OR',    # Common word "or"
-        'SO',    # Common word "so"
-        'TO',    # Common word "to"
-        'UP',    # Common word "up"
-        'US',    # Common word "us"
-        'WE',    # Common word "we"
-        # Add more if needed
-    }
-    
-    # Minimum length for ticker matching
-    MIN_TICKER_LENGTH = 2
-    
-    stock_patterns = {}
-    
+def generate_full_text(row):
+        ticker = str(row['ticker'])
+        title = str(row['title']).strip()
+        
+        suffix_pattern = r'[,.\s]+(Inc\.?|Corp\.?|Corporation|Ltd\.?|Limited|Co\.?|Company|PLC|L\.P\.?|LLC|S\.A\.?|S\.A\.B\.?|de C\.V\.?|N\.V\.?|A\.?G\.?|S\.E\.?|S\.p\.A\.?|Group|Holdings?|Trust|Fund|ETF|REIT|/DE/?|/TX/?|/NY/?|/MD/?|/VA/?|/NV/?|/TN/?|/OH/?|/CN/?|/FI/?|/PA/?|/MA/?|/CA/?|& Co\.?|/NEW/|/OLD/).*$'
+        
+        alias = re.sub(suffix_pattern, '', title, flags=re.IGNORECASE).strip()
+        alias = alias.strip('.,/- ')
+        
+        if not alias:
+            alias = title
+        return f"{title}, ticker: {ticker}, {alias}"
+
+
+def build_cleaned_flashtext_processor(df_stocks, blacklist):
+    keyword_processor = KeywordProcessor(case_sensitive=False)
+
+    # white list
+    valid_tickers = set(df_stocks['ticker'].str.upper().dropna().tolist())
+
+    filtered_count = 0
     for _, row in df_stocks.iterrows():
-        ticker = row['ticker'].upper()
-        name = row['name']
-        title = row['title']
-        
-        patterns = {
-            'safe_tickers': [],      # Tickers safe to match
-            'company_names': [],     # Company name variations
-            'require_context': []    # Tickers that need context (like "$A")
-        }
-        
-        # Handle ticker matching
-        if ticker in SKIP_TICKERS:
-            # For problematic tickers, only match with $ prefix or clear stock context
-            patterns['require_context'].append(ticker)
-        elif len(ticker) >= MIN_TICKER_LENGTH:
-            patterns['safe_tickers'].append(ticker)
-        
-        # Add company names (cleaned)
-        clean_name = re.sub(r'\b(inc\.?|corp\.?|corporation|company|co\.?|ltd\.?)\b', '', name, flags=re.IGNORECASE).strip()
-        clean_title = re.sub(r'\b(inc\.?|corp\.?|corporation|company|co\.?|ltd\.?)\b', '', title, flags=re.IGNORECASE).strip()
-        
-        patterns['company_names'].extend([name, title, clean_name, clean_title])
-        
-        # Remove empty/short names
-        patterns['company_names'] = [n for n in patterns['company_names'] if len(n.strip()) > 2]
-        
-        stock_patterns[ticker] = patterns
-    
-    return stock_patterns
+        ticker = str(row['ticker']).upper()
+        # title = str(row['title']) # Original title, less robust for aliases
+        full_text = str(row['full_text']) # Use full_text which includes title and alias
+
+        if ticker in blacklist:
+            filtered_count += 1
+            continue 
+
+        keyword_processor.add_keyword(ticker, ticker)
+
+        full_text_parts = [part.strip() for part in full_text.split(',') if part.strip()]
+
+        if len(full_text_parts) > 0: 
+            keyword_processor.add_keyword(full_text_parts[0], ticker)
+        if len(full_text_parts) > 2: 
+            keyword_processor.add_keyword(full_text_parts[2], ticker)
+
+    return keyword_processor, valid_tickers
 
 
-def fast_stock_mentions(text, stock_patterns):
-    text_upper = text.upper()
-    text_lower = text.lower()
-    mentions = []
-    
-    for ticker, patterns in stock_patterns.items():
-        if re.search(r'\b' + re.escape(ticker) + r'\b', text_upper):
-            mentions.append({
-                'ticker': ticker,
-                'match_type': 'exact_ticker',
-                'confidence': 100
-            })
-            continue
-        
-        for pattern in patterns:
-            if pattern.lower() in text_lower:
-                mentions.append({
-                    'ticker': ticker,
-                    'match_type': 'exact_name', 
-                    'confidence': 95
-                })
-                break
-    
-    return mentions
+def local_process_comment_no_llm_or_embedding(keyword_processor, model, comment, names, comment_id, black_list, valid_tickers):
+    hit_tickers = set()
 
-def analyze_stock_mentions_fast(df_social, stock_patterns, batch_size=10000): # batch size can be adjusted
-    results = []
-    total_rows = len(df_social)
-    
-    essential_fields = [ # these are columns to be preserved in the df_comments dataframe; submissions have title and selftext, while comments have body
-    
-        'id', 'title', 'selftext', 'body', 'author', 'created_utc', 'score', 
-        'num_comments', 'url', 'subreddit', 'upvote_ratio'
-    ]
-    
-    for i in range(0, total_rows, batch_size):
-        batch = df_social.iloc[i:i+batch_size]
-        print(f"Processing batch {i//batch_size + 1}/{(total_rows-1)//batch_size + 1}")
+    direct_hits = keyword_processor.extract_keywords(comment)
+    hit_tickers.update(direct_hits)
+
+    labels = ["company", "stock", "commercial organization"]
+    entities = model.predict_entities(str(comment), labels, threshold=0.3)
+
+    for entity in entities:
+        text_span = entity['text']
+        normalized_text_span = text_span.strip().upper()
         
-        for idx, row in batch.iterrows():
-            text = str(row.get('selftext', '')) + ' ' + str(row.get('title', '')) + ' '+ str(row.get('body', ''))
-            mentions = fast_stock_mentions(text, stock_patterns)  # Use fast version
-            
-            # Create base record with all essential fields
-            base_record = {}
-            for field in essential_fields:
-                base_record[field] = row.get(field, None)
-            
-            for mention in mentions:
-                # Create a complete record for each mention
-                record = base_record.copy()  # Copy all the essential fields
-                
-                # Add stock mention specific fields
-                record.update({
-                    'ticker': mention['ticker'],
-                    'match_type': mention['match_type'],
-                    'confidence': mention['confidence']
-                })
-                
-                results.append(record)
-    
-    return pd.DataFrame(results)
+        if normalized_text_span not in hit_tickers and normalized_text_span not in black_list:
+            if normalized_text_span in names:
+                matched_ticker = names.get(normalized_text_span)
+                if matched_ticker and matched_ticker in valid_tickers: # Validate against original tickers
+                    hit_tickers.add(matched_ticker)
+
+    return list(hit_tickers)
 
 
 '''
 PART II
 This part contains helper functions in the sequence embedding process
 '''
-def create_sequences(row, df_daily, lookback=60): #you may change the look-back period based on needs
+
+#new sequence function:
+def create_sequences(row, mentions, lookback=8): #you may change the look-back period based on needs
     ticker = row['ticker']
-    earnings_date = pd.to_datetime(row['reportedDate'])
+    returns_date = row['date']
     
     # Get date range
-    start_date = earnings_date - pd.Timedelta(days=lookback)
-    end_date = earnings_date - pd.Timedelta(days=1)  # the day before earnings report #note that this is the day when the report comes out, not the date of the fiscal end
+    start_date = returns_date - pd.Timedelta(days=lookback)
+    end_date = returns_date - pd.Timedelta(days=1)  # the day before earnings report #note that this is the day when the report comes out, not the date of the fiscal end
+    full_date_range = pd.date_range(start=start_date, end=end_date)
     
     mask = (
-        (df_daily['ticker'] == ticker) &
-        (df_daily['date'] >= start_date) &
-        (df_daily['date'] <= end_date)
+        (mentions['ticker'] == ticker) &
+        (mentions['date'] >= start_date) &
+        (mentions['date'] <= end_date)
     )
-    sequence_data = df_daily[mask].sort_values('date')
-    
-    # Handle missing days (days with no posts)
-    date_range = pd.date_range(start_date, end_date, freq='D')
-    sequence_data = sequence_data.set_index('date').reindex(date_range)
-    sequence_data['combined_text'] = sequence_data['combined_text'].fillna('')  # empty string for no posts
-    
-    return sequence_data['combined_text'].tolist()
+    daily_data = mentions[mask].sort_values('date')
+    daily_groups = daily_data.groupby('date')['source_text'].apply(list)
+    daily_groups = daily_groups.reindex(full_date_range, fill_value=[])
 
-def count_zeros_in_sequence(embedding_seq):
-    #this function checks the distribution of the number of posts in the 60-day look-back window
-    if isinstance(embedding_seq, torch.Tensor):
-        embedding_seq = embedding_seq.numpy()
+    #structure: [ ['Day1_Post1', 'Day1_Post2'], ['Day2_Post1'], [], ... ]
+    return daily_groups.tolist()
+
+
+# def create_sequences(row, df_daily, lookback=60): #you may change the look-back period based on needs
+#     ticker = row['ticker']
+#     earnings_date = pd.to_datetime(row['reportedDate'])
     
-    zero_days = 0
-    for day_embedding in embedding_seq:
-        if np.abs(day_embedding).sum() < 0.01:  # Essentially zero
-            zero_days += 1
-    return zero_days
+#     # Get date range
+#     start_date = earnings_date - pd.Timedelta(days=lookback)
+#     end_date = earnings_date - pd.Timedelta(days=1)  # the day before earnings report #note that this is the day when the report comes out, not the date of the fiscal end
+    
+#     mask = (
+#         (df_daily['ticker'] == ticker) &
+#         (df_daily['date'] >= start_date) &
+#         (df_daily['date'] <= end_date)
+#     )
+#     sequence_data = df_daily[mask].sort_values('date')
+    
+#     # Handle missing days (days with no posts)
+#     date_range = pd.date_range(start_date, end_date, freq='D')
+#     sequence_data = sequence_data.set_index('date').reindex(date_range)
+#     sequence_data['combined_text'] = sequence_data['combined_text'].fillna('')  # empty string for no posts
+    
+#     return sequence_data['combined_text'].tolist()
+
+# def count_zeros_in_sequence(embedding_seq):
+#     #this function checks the distribution of the number of posts in the 60-day look-back window
+#     if isinstance(embedding_seq, torch.Tensor):
+#         embedding_seq = embedding_seq.numpy()
+    
+#     zero_days = 0
+#     for day_embedding in embedding_seq:
+#         if np.abs(day_embedding).sum() < 0.01:  # Essentially zero
+#             zero_days += 1
+#     return zero_days
+
+'''
+PART III
+This part does embedding
+'''
+def get_bert_embedding(tokenizer, model , text):
+    if not text or text.strip() == '':  # handle empty days
+        return torch.zeros(768)
+    
+    inputs = tokenizer(text, return_tensors='pt', 
+                      truncation=True, max_length=512,
+                      padding=True)
+    
+    with torch.no_grad():
+        outputs = model(**inputs)
+    
+    # Use [CLS] token embedding
+    embedding = outputs.last_hidden_state[:, 0, :].squeeze()
+    return embedding
