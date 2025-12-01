@@ -56,6 +56,6 @@ Custom HAN architecture: GRU + Attention mechanisms
 
 1. Current issue: data was incomplete and potential class imbalance. 
 
-2. Finalize training and deloy model. 
+2. Finalize training and deloy model: Check out the demo on hugging face here!! https://huggingface.co/spaces/Yoosine/Reddit-based_Return_Predictor
 
 3. Optimize data preprocessing and fine-tuning.
