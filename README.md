@@ -52,10 +52,18 @@ Custom HAN architecture: GRU + Attention mechanisms
 ![The workflow illustration](workflow_image.png "Workflow")
 
 
-**To-do s**
+**Results**
 
-1. Current issue: data was incomplete and potential class imbalance. 
+Average Loss: 0.6782 \
+Overall Accuracy: 60.5697% \
+Risk Precision: 0.5842 \
+Risk Recall: **0.7331** \
+Risk F1-Score: 0.6503 
 
-2. Finalize training and deloy model: Check out the demo on hugging face here!! https://huggingface.co/spaces/Yoosine/Reddit-based_Return_Predictor
+Detailed Classification Report:
 
-3. Optimize data preprocessing and fine-tuning.
+              precision    recall  f1-score
+              
+    Safe (0)     0.6419    0.4783    0.5481
+    Risk (1)     0.5842    0.7331    0.6503
+    accuracy                         0.6057 
