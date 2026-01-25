@@ -4,13 +4,12 @@
 1. Data Collection
 
 Reddit Data: r/wallstreetbets submissions and comments from Academic Torrents
-Earnings Data: Quarterly earnings history via Alpha Vantage API
-Financial Data: Quarterly fundamentals from Compustat (optional enhancement)
+Price and Return Data: Via WRDS.
 
 2. Data Preprocessing
 
 Ticker Extraction: Match posts to stocks using regex-based ticker detection
-Temporal Alignment: Create 60-day lookback windows before each earnings announcement date
+Temporal Alignment: Create 20-day lookback windows before each earnings announcement date
 Daily Aggregation: Combine all posts about a stock per day into daily text sequences
 
 3. Feature Engineering
@@ -28,12 +27,6 @@ Prediction Head: Dense layers output earnings surprise probability
 
 5. Evaluation:
 Use F1 score and Recall as major evaluation metrics. Used Logistic regression (F1 0.38) and CNN (F1 0.62) as benchmarks. 
-
-**Resources**
-
-1. Academic Torrents: https://academictorrents.com/details/ba051999301b109eab37d16f027b3f49ade2de13 
-2. Alpha Vantage API: https://www.alphavantage.co/documentation/ (Earnings endpoint) 
-3. FinBERT: ProsusAI/finbert (Hugging Face)
 
 ![The workflow illustration](workflow_image.png "Workflow")
 
