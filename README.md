@@ -3,7 +3,7 @@
 **Pipeline Overview**
 1. Data Collection
 
-Reddit Data: r/wallstreetbets submissions and comments (2019-2024) from Academic Torrents
+Reddit Data: r/wallstreetbets submissions and comments from Academic Torrents
 Earnings Data: Quarterly earnings history via Alpha Vantage API
 Financial Data: Quarterly fundamentals from Compustat (optional enhancement)
 
@@ -12,13 +12,12 @@ Financial Data: Quarterly fundamentals from Compustat (optional enhancement)
 Ticker Extraction: Match posts to stocks using regex-based ticker detection
 Temporal Alignment: Create 60-day lookback windows before each earnings announcement date
 Daily Aggregation: Combine all posts about a stock per day into daily text sequences
-Time-based Split: Train (2019-2022), Validation (2023), Test (2024)
 
 3. Feature Engineering
 
 Text Vectorization: FinBERT embeddings for each day's aggregated text
-Sequence Construction: 60-day sequences for each earnings event
-Labels: classification (positive v. negative earnings surprise)
+Sequence Construction: 20-day sequences for each stock in each day
+Labels: binary classification - top 25% of volatility considered extreme volatility (positive class) and normal volatility (negative class)
 
 4. Model Architecture
 
@@ -27,21 +26,8 @@ Sequential Modeling: Bi-directional GRU processes
 Temporal Attention: Learns which days matter most for prediction
 Prediction Head: Dense layers output earnings surprise probability
 
-5. Evaluation: tbd
-
-
-**Tech Stack**
-
-1. Data & Preprocessing
-
-Pandas, NumPy: Data manipulation
-fuzzywuzzy: Ticker matching
-Transformers (Hugging Face): FinBERT embeddings
-
-2. Deep Learning
-
-PyTorch: Neural network framework
-Custom HAN architecture: GRU + Attention mechanisms
+5. Evaluation:
+Use F1 score and Recall as major evaluation metrics. Used Logistic regression (F1 0.38) and CNN (F1 0.62) as benchmarks. 
 
 **Resources**
 
