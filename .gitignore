@@ -1,0 +1,159 @@
+# ============================
+# Python
+# ============================
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+
+# ============================
+# Virtual Environments
+# ============================
+.venv/
+venv/
+env/
+ENV/
+env.bak/
+venv.bak/
+.python-version
+
+# uv
+# uv.lock is usually committed for reproducible builds.
+# If you prefer not to commit it, uncomment the next line:
+# uv.lock
+
+# ============================
+# macOS / Windows OS files
+# ============================
+.DS_Store
+.AppleDouble
+.LSOverride
+._*
+Thumbs.db
+Thumbs.db:encryptable
+ehthumbs.db
+ehthumbs_vista.db
+*.stackdump
+[Dd]esktop.ini
+
+# ============================
+# IDE / Editor
+# ============================
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+*.sublime-project
+*.sublime-workspace
+
+# ============================
+# Data files
+# ============================
+# data_processing 数据目录：忽略所有内容，但保留 Python 包结构和脚本
+# 注意：scripts/ 下的预处理脚本需要被 Git 跟踪
+data_processing/**
+!data_processing/__init__.py
+!data_processing/scripts/
+!data_processing/scripts/**
+*.csv
+*.tsv
+*.json
+*.jsonl
+*.ndjson
+*.xlsx
+*.xls
+*.parquet
+*.pkl
+*.pickle
+*.npy
+*.npz
+*.h5
+*.hdf5
+*.db
+*.sqlite
+*.sqlite3
+*.feather
+*.arrow
+*.dta
+*.sav
+*.sas7bdat
+
+# Compressed / stream / download artifacts
+*.zst
+*.zstd
+*.tar
+*.gz
+*.bz2
+*.torrent
+*.parts
+
+# ============================
+# Model checkpoints / logs / outputs
+# ============================
+*.pt
+*.pth
+*.ckpt
+*.safetensors
+*.onnx
+*.tflite
+*.pb
+logs/
+runs/
+wandb/
+mlruns/
+outputs/
+checkpoints/
+models/
+results/
+
+# ============================
+# Jupyter Notebook
+# ============================
+.ipynb_checkpoints/
+*.ipynb
+
+# ============================
+# Testing / Coverage
+# ============================
+.tox/
+.nox/
+.coverage
+.coverage.*
+.cache
+nosetests.xml
+coverage.xml
+*.cover
+*.py,cover
+.hypothesis/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.dmypy.json
+
+# ============================
+# Environment / Secrets
+# ============================
+.env
+.env.local
+.env.*.local
+*.env
+secrets/
+*.key
+*.pem

@@ -1,12 +1,16 @@
 import pandas as pd
 import dask.dataframe as dd
 import numpy as np
-import re
-import sys
 from pathlib import Path
+import sys
+
+# 将项目根目录加入 sys.path，以便从根目录导入 config
+PROJECT_ROOT = Path(__file__).resolve().parents[2]
+sys.path.insert(0, str(PROJECT_ROOT))
+
 import config
 args = config.args
-from helper import compute_future_realized_vol, perform_local_extraction, count_floats, count_keywords, batch_process_embeddings_stream, build_day_dict_compact, build_time_series_samples, temporal_train_val_test_split
+from helpers import compute_future_realized_vol, perform_local_extraction, count_floats, count_keywords, batch_process_embeddings_stream, build_day_dict_compact, build_time_series_samples, temporal_train_val_test_split
 
 #loading social media text
 df_comments = pd.read_csv(args.submissionandcomments_dir)
@@ -90,7 +94,7 @@ samples = build_time_series_samples(final_df, day_dict, W=20, label_col="RV_5")
 train_s, val_s, test_s = temporal_train_val_test_split(samples, "2024-06-30", "2024-09-30")
 
 #saving data
-save_dir = "./data processing" 
+save_dir = "./data_processing" 
 os.makedirs(save_dir, exist_ok=True)
 print(f"Saving data to {save_dir} ...")
 torch.save(day_dict, os.path.join(save_dir, "day_dict.pt"))

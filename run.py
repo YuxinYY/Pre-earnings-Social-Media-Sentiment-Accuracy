@@ -15,10 +15,10 @@ import importlib
 import vol_model, vol_train
 from vol_model import HAN_Classification
 from vol_train import ClassificationTrainer
-from helper import convert_to_binary_classification
+from data_processing.scripts.helpers import convert_to_binary_classification
 
 #loading data
-load_dir = "./data processing"
+load_dir = "./data_processing"
 
 if os.path.exists(os.path.join(load_dir, "config.pt")):
     config = torch.load(os.path.join(load_dir, "config.pt"))
