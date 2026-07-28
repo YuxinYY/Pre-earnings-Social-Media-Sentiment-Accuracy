@@ -121,6 +121,8 @@ mlruns/
 outputs/
 checkpoints/
 models/
+finbert_model/
+gliner_model/
 results/
 
 # ============================
@@ -146,6 +148,7 @@ coverage.xml
 .mypy_cache/
 .ruff_cache/
 .dmypy.json
+WORKFLOW.md
 
 # ============================
 # Environment / Secrets

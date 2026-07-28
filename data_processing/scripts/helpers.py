@@ -19,6 +19,15 @@ from transformers import AutoTokenizer, AutoModel
 import json
 
 
+def get_device():
+    """自动选择可用设备：CUDA > MPS (Apple Silicon) > CPU"""
+    if torch.cuda.is_available():
+        return torch.device("cuda")
+    if torch.backends.mps.is_available():
+        return torch.device("mps")
+    return torch.device("cpu")
+
+
 def local_process_comment(keyword_processor, model, comment, names, comment_id, black_list, valid_tickers):
     hit_tickers = set()
 
@@ -41,8 +50,33 @@ def local_process_comment(keyword_processor, model, comment, names, comment_id, 
     return list(hit_tickers)
 
 
-def perform_local_extraction(df_comments_chunk, TEMP_RESULTS_FILE):
+def perform_local_extraction(
+    df_comments_chunk,
+    TEMP_RESULTS_FILE,
+    valid_tickers,
+    names=None,
+    black_list=None,
+    gliner_model_path="./gliner_model",
+):
     print(f"starting processing {len(df_comments_chunk)} comments (FlashText + GLiNER + accurate name matching)...")
+
+    if names is None:
+        names = {}
+    if black_list is None:
+        black_list = set()
+
+    # FlashText：直接命中 ticker
+    keyword_processor = KeywordProcessor(case_sensitive=False)
+    for t in valid_tickers:
+        keyword_processor.add_keyword(str(t).upper(), t)
+
+    # GLiNER：识别公司/股票实体。优先使用本地模型目录，否则从 HuggingFace 下载
+    if not os.path.exists(gliner_model_path):
+        gliner_model_path = "urchade/gliner_small-v2.1"
+    device = get_device()
+    print(f"Loading GLiNER from {gliner_model_path} on {device} ...")
+    model = GLiNER.from_pretrained(gliner_model_path).to(device)
+    model.eval()
 
     if 'combined_text' not in df_comments_chunk.columns:
         df_comments_chunk['combined_text'] = (
@@ -53,18 +87,23 @@ def perform_local_extraction(df_comments_chunk, TEMP_RESULTS_FILE):
 
     # initialize lists
     all_final_results_flat = []
-    
+
     total_rows = len(df_comments_chunk)
     save_interval = max(1, int(total_rows * 0.05)) # 至少 1 行，或者 10%
     last_save_row_index = 0
-    
+
     df_comments_chunk['id'] = df_comments_chunk['id'].astype(str)
 
     with tqdm(total=total_rows, desc="Local Entity Processing (FlashText + GLiNER)") as pbar:
         for index, row in df_comments_chunk.iterrows():
             matched_tickers = local_process_comment(
-                row['combined_text'], 
-                row['id']
+                keyword_processor,
+                model,
+                row['combined_text'],
+                names,
+                row['id'],
+                black_list,
+                valid_tickers,
             )
 
             if matched_tickers:
@@ -74,18 +113,20 @@ def perform_local_extraction(df_comments_chunk, TEMP_RESULTS_FILE):
                         "source_text": row['combined_text'],
                         "matched_ticker": ticker
                     })
-            
+
             pbar.update(1)
-            
+
             current_row_index = pbar.n #
-            
-         
+
+
             if (current_row_index >= last_save_row_index + save_interval) or current_row_index == total_rows:
                 df_temp = pd.DataFrame(all_final_results_flat)
                 df_temp.to_csv(TEMP_RESULTS_FILE, index=False)
                 print('At', current_row_index, 'rows, saved to TEMP_RESULTS_FILE')
                 last_save_row_index = current_row_index
                 pbar.write(f"\n⏳ At {current_row_index} / {total_rows} rows ({current_row_index/total_rows:.2%}),  mid results saved to {TEMP_RESULTS_FILE}")
+
+    return pd.DataFrame(all_final_results_flat)
 
 def compute_future_realized_vol(
     df_stock: pd.DataFrame,
@@ -229,9 +270,12 @@ def compute_future_avg_volume( #default is 3 days
 
 model_path = "./finbert_model"
 def load_finbert_model(model_path="./finbert_model"):
+    device = get_device()
     tokenizer = AutoTokenizer.from_pretrained(model_path)
-    model = AutoModel.from_pretrained(model_path).to("cuda").half()
-    model.eval() 
+    model = AutoModel.from_pretrained(model_path).to(device)
+    if device.type == "cuda":
+        model = model.half()  # 半精度仅在 CUDA 上启用，MPS/CPU 用 float32
+    model.eval()
     return tokenizer, model
 
 def split_text_by_token(text, tokenizer, max_length=512):
@@ -248,13 +292,14 @@ def split_text_by_token(text, tokenizer, max_length=512):
 
 def get_embedding(text_list, tokenizer, model, max_length=512):
     """批量生成文本嵌入（超长文本分段+聚合）"""
+    device = next(model.parameters()).device
     all_embeddings = []
     for text in text_list:
         segments = split_text_by_token(text, tokenizer, max_length)
-        if not segments:  
+        if not segments:
             all_embeddings.append(np.zeros(768).tolist())
             continue
-        
+
         segment_inputs = tokenizer(
             segments,
             padding=True,
@@ -262,7 +307,7 @@ def get_embedding(text_list, tokenizer, model, max_length=512):
             max_length=max_length,
             return_tensors="pt"
         )
-        segment_inputs = {k: v.to("cuda") for k, v in segment_inputs.items()}
+        segment_inputs = {k: v.to(device) for k, v in segment_inputs.items()}
         
         with torch.no_grad():
             segment_outputs = model(**segment_inputs)
@@ -356,13 +401,22 @@ def batch_process_embeddings_stream(
         del chunk_embeddings
         del save_df
         gc.collect()  # 强制运行垃圾回收
-        torch.cuda.empty_cache() # 清理显存碎片
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache() # 清理显存碎片
+        elif torch.backends.mps.is_available():
+            torch.mps.empty_cache()
 
     print("✅ 所有处理完成！")
 
 
 #spliting data
 import dask.dataframe as dd
+
+
+def _to_vec(x):
+    """把 embedding 列的值统一转成 1 维 numpy float32 向量"""
+    return np.asarray(x, dtype=np.float32).reshape(-1)
+
 
 def build_day_dict_compact(
     df: pd.DataFrame,
@@ -450,14 +504,19 @@ def build_time_series_samples(
 ) -> List[Tuple]:
     
     print(f"🚀 构建分类样本 (目标: {label_col})...")
-    
-    # 提取 Label 相关列到 Pandas
-    label_df = ddf[[ticker_col, date_col, label_col]].compute()
+
+    # 提取 Label 相关列到 Pandas（兼容 dask 和 pandas 输入）
+    label_df = ddf[[ticker_col, date_col, label_col]]
+    if hasattr(label_df, "compute"):
+        label_df = label_df.compute()
     label_df[date_col] = pd.to_datetime(label_df[date_col])
     
     # 核心：二分类处理
-    # 只要 exret > 0 就是 1，否则是 0
-    label_df['target'] = (label_df[label_col] > 0).astype(int)
+    # RV（已实现波动率）恒为非负数，">0" 会让所有样本标签都为 1，
+    # 因此以中位数为界：高于中位数视为高波动 (1)，否则为 (0)
+    threshold = label_df[label_col].median()
+    print(f"   ...二分类阈值 ({label_col} 中位数): {threshold:.6f}")
+    label_df['target'] = (label_df[label_col] > threshold).astype(int)
     
     # 每天每个股票只有一个 Label
     label_map = label_df.drop_duplicates([ticker_col, date_col]).set_index([ticker_col, date_col])['target'].to_dict()
