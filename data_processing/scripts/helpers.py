@@ -1,3 +1,19 @@
+"""
+供 `pipeline.py` 使用的工具函数集合。
+
+作用:
+    - `perform_local_extraction`: FlashText 精确匹配 ticker + GLiNER 公司实体识别。
+    - `compute_future_realized_vol`: 计算未来 N 日实现波动率（RV）。
+    - `count_floats` / `count_keywords`: 文本统计特征。
+    - `batch_process_embeddings_stream`: 用本地 FinBERT 批量生成 embedding 并流式保存。
+    - `build_day_dict_compact`: 按 (ticker, date) 聚合帖子 embedding。
+    - `build_time_series_samples`: 生成 HAN 时间序列样本。
+    - `temporal_train_val_test_split`: 按时间切分训练/验证/测试集。
+
+注意:
+    - 该文件不直接运行，只被 `pipeline.py` import。
+    - 会根据当前机器自动选择 CUDA > MPS > CPU。
+"""
 
 import re
 import os
@@ -291,32 +307,23 @@ def split_text_by_token(text, tokenizer, max_length=512):
     return segments
 
 def get_embedding(text_list, tokenizer, model, max_length=512):
-    """批量生成文本嵌入（超长文本分段+聚合）"""
+    """批量生成文本嵌入。为控制耗时，超长文本直接截断到 max_length tokens。"""
     device = next(model.parameters()).device
-    all_embeddings = []
-    for text in text_list:
-        segments = split_text_by_token(text, tokenizer, max_length)
-        if not segments:
-            all_embeddings.append(np.zeros(768).tolist())
-            continue
+    # 直接对整个 batch 做 truncation，避免逐条文本分段带来的大量小 batch 前向传播
+    inputs = tokenizer(
+        text_list,
+        padding=True,
+        truncation=True,
+        max_length=max_length,
+        return_tensors="pt"
+    )
+    inputs = {k: v.to(device) for k, v in inputs.items()}
 
-        segment_inputs = tokenizer(
-            segments,
-            padding=True,
-            truncation=True,
-            max_length=max_length,
-            return_tensors="pt"
-        )
-        segment_inputs = {k: v.to(device) for k, v in segment_inputs.items()}
-        
-        with torch.no_grad():
-            segment_outputs = model(**segment_inputs)
-        
-        segment_embeddings = segment_outputs.last_hidden_state[:, 0, :].cpu().numpy()
-        final_embedding = np.mean(segment_embeddings, axis=0)  
-        all_embeddings.append(final_embedding.tolist())
-    
-    return all_embeddings
+    with torch.no_grad():
+        outputs = model(**inputs)
+
+    embeddings = outputs.last_hidden_state[:, 0, :].cpu().numpy()
+    return embeddings.tolist()
 
 def batch_process_embeddings_stream(
     df,

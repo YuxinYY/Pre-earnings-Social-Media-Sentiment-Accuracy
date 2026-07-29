@@ -64,6 +64,19 @@ ehthumbs_vista.db
 *.sublime-workspace
 
 # ============================
+# Image files
+# ============================
+*.png
+*.jpg
+*.jpeg
+*.gif
+*.bmp
+*.svg
+*.webp
+*.tif
+*.tiff
+
+# ============================
 # Data files
 # ============================
 # data_processing 数据目录：忽略所有内容，但保留 Python 包结构和脚本
