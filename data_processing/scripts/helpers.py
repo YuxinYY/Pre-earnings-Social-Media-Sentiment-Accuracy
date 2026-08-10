@@ -50,6 +50,11 @@ def local_process_comment(keyword_processor, model, comment, names, comment_id, 
     direct_hits = keyword_processor.extract_keywords(comment)
     hit_tickers.update(direct_hits)
 
+    # 已直接命中 ticker 时跳过 GLiNER：NER 的主要价值是识别"只提公司名不提 ticker"的帖子，
+    # 直接命中后再跑 NER 收益很低，但能省下绝大部分推理时间
+    if hit_tickers:
+        return list(hit_tickers)
+
     labels = ["company", "stock", "commercial organization"]
     entities = model.predict_entities(str(comment), labels, threshold=0.3)
 
@@ -73,6 +78,7 @@ def perform_local_extraction(
     names=None,
     black_list=None,
     gliner_model_path="./gliner_model",
+    model=None,
 ):
     print(f"starting processing {len(df_comments_chunk)} comments (FlashText + GLiNER + accurate name matching)...")
 
@@ -86,13 +92,21 @@ def perform_local_extraction(
     for t in valid_tickers:
         keyword_processor.add_keyword(str(t).upper(), t)
 
-    # GLiNER：识别公司/股票实体。优先使用本地模型目录，否则从 HuggingFace 下载
-    if not os.path.exists(gliner_model_path):
-        gliner_model_path = "urchade/gliner_small-v2.1"
-    device = get_device()
-    print(f"Loading GLiNER from {gliner_model_path} on {device} ...")
-    model = GLiNER.from_pretrained(gliner_model_path).to(device)
-    model.eval()
+    # 候选预筛选：ticker + 公司名。文本里两者都没有的帖子不可能匹配，直接跳过 GLiNER
+    candidate_processor = KeywordProcessor(case_sensitive=False)
+    for t in valid_tickers:
+        candidate_processor.add_keyword(str(t).upper())
+    for name in names:
+        candidate_processor.add_keyword(str(name).upper())
+
+    # GLiNER：识别公司/股票实体。可传入预加载的模型（分块调用时避免重复加载）
+    if model is None:
+        if not os.path.exists(gliner_model_path):
+            gliner_model_path = "urchade/gliner_small-v2.1"
+        device = get_device()
+        print(f"Loading GLiNER from {gliner_model_path} on {device} ...")
+        model = GLiNER.from_pretrained(gliner_model_path).to(device)
+        model.eval()
 
     if 'combined_text' not in df_comments_chunk.columns:
         df_comments_chunk['combined_text'] = (
@@ -112,6 +126,11 @@ def perform_local_extraction(
 
     with tqdm(total=total_rows, desc="Local Entity Processing (FlashText + GLiNER)") as pbar:
         for index, row in df_comments_chunk.iterrows():
+            # 候选预筛选：无 ticker/公司名关键词的帖子直接跳过
+            if not candidate_processor.extract_keywords(row['combined_text']):
+                pbar.update(1)
+                continue
+
             matched_tickers = local_process_comment(
                 keyword_processor,
                 model,
@@ -144,6 +163,53 @@ def perform_local_extraction(
 
     return pd.DataFrame(all_final_results_flat)
 
+def compute_idiosyncratic_vol(
+    df_ret: pd.DataFrame,
+    df_mkt: pd.DataFrame,
+    window: int = 5,
+    beta_window: int = 60,
+    ret_col: str = "sector_RET",
+    mkt_col: str = "SP500_RET",
+    ticker_col: str = "ticker",
+    date_col: str = "date",
+):
+    """
+    Compute forward idiosyncratic volatility (IVOL), CAPM 市场模型残差法:
+
+        1. 滚动 beta: 用过去 beta_window 天对 r_t = alpha + beta * m_t 做估计
+        2. 残差 resid_t = r_t - (alpha_t + beta_t * m_t)
+        3. 前向 IVOL: IVOL_t = std(resid_{t+1 .. t+window})   (Ang et al. 2006 定义)
+
+    df_ret: [ticker, date, ret_col]，每个 (ticker, date) 一行
+    df_mkt: [date, mkt_col]，市场收益（如 S&P 500）
+    返回: [ticker, date, ivol_{window}]
+    """
+    df = pd.merge(df_ret, df_mkt[[date_col, mkt_col]], on=date_col, how='inner')
+    df = df.sort_values([ticker_col, date_col])
+
+    def _resid(s):
+        m = df.loc[s.index, mkt_col]
+        beta = (
+            s.rolling(beta_window, min_periods=beta_window).cov(m)
+            / m.rolling(beta_window, min_periods=beta_window).var()
+        )
+        alpha = (
+            s.rolling(beta_window, min_periods=beta_window).mean()
+            - beta * m.rolling(beta_window, min_periods=beta_window).mean()
+        )
+        return s - (alpha + beta * m)
+
+    df["_resid"] = df.groupby(ticker_col)[ret_col].transform(_resid)
+
+    name = f"ivol_{window}"
+    # shift(-1) 后的 rolling 是向后看的，需再 shift(-(window-1)) 移回真正的未来窗口
+    df[name] = df.groupby(ticker_col)["_resid"].transform(
+        lambda s: s.shift(-1).rolling(window).std().shift(-(window - 1))
+    )
+
+    return df[[ticker_col, date_col, name]]
+
+
 def compute_future_realized_vol(
     df_stock: pd.DataFrame,
     window: int,
@@ -155,6 +221,9 @@ def compute_future_realized_vol(
     Compute future realized volatility:
     RV_t = sqrt(sum_{k=1..window} RET_{t+k}^2)
 
+    注意：shift(-1) 后的 rolling(window) 是向后看的，覆盖 RET_{t-window+2..t+1}，
+    必须再 shift(-(window-1)) 把窗口移回真正的未来 [t+1, t+window]。
+
     df_stock must have one row per (ticker, date)
     """
     df = df_stock.copy()
@@ -162,14 +231,44 @@ def compute_future_realized_vol(
 
     rv_name = f"RV_{window}"
 
-    df[rv_name] = (
-        df.groupby(ticker_col)[ret_col]
-          .shift(-1)                       # future returns
-          .rolling(window)
-          .apply(lambda x: np.sqrt(np.sum(x**2)), raw=True)
-    )
+    def _future_rv(s):
+        shifted = s.shift(-1)
+        return shifted.rolling(window).apply(lambda x: np.sqrt(np.sum(x**2)), raw=True).shift(-(window - 1))
+
+    df[rv_name] = df.groupby(ticker_col)[ret_col].transform(_future_rv)
 
     return df[[ticker_col, date_col, rv_name]]
+
+
+def compute_future_return(
+    df_stock: pd.DataFrame,
+    window: int,
+    ret_col: str = "RET",
+    ticker_col: str = "ticker",
+    date_col: str = "date",
+):
+    """
+    Compute future compounded return:
+    R_t = prod_{k=1..window} (1 + RET_{t+k}) - 1
+
+    用 log 收益滚动求和实现。注意 shift(-1) 后的 rolling(window) 是向后看的，
+    覆盖 RET_{t-window+2..t+1}，必须再 shift(-(window-1)) 移回真正的未来窗口。
+
+    df_stock must have one row per (ticker, date)
+    """
+    df = df_stock.copy()
+    df = df.sort_values([ticker_col, date_col])
+    df[ret_col] = pd.to_numeric(df[ret_col], errors='coerce')
+
+    name = f"future_{window}d_ret"
+
+    def _future_ret(s):
+        fut = np.log1p(s).shift(-1).rolling(window, min_periods=window).sum().shift(-(window - 1))
+        return np.expm1(fut)
+
+    df[name] = df.groupby(ticker_col)[ret_col].transform(_future_ret)
+
+    return df[[ticker_col, date_col, name]]
 
 
 def lastNday_avg_score(
@@ -368,6 +467,11 @@ def batch_process_embeddings_stream(
         
         # 确保文本列是字符串
         chunk_df[text_col] = chunk_df[text_col].fillna("").astype(str)
+
+        # 按文本长度排序再切 batch：避免某个 batch 里混入一条超长文本，
+        # 导致整个 batch 都 padding 到 512 tokens（大部分帖子只有几十个 token）
+        chunk_df = chunk_df.assign(_text_len=chunk_df[text_col].str.len())
+        chunk_df = chunk_df.sort_values('_text_len', kind='stable')
         
         # 容器：存放当前 chunk 的所有 embeddings
         chunk_embeddings = []
@@ -507,9 +611,10 @@ def build_time_series_samples(
     W: int = 20,
     label_col: str = "exret",
     ticker_col: str = "ticker",
-    date_col: str = "date"
+    date_col: str = "date",
+    threshold: float = None,
 ) -> List[Tuple]:
-    
+
     print(f"🚀 构建分类样本 (目标: {label_col})...")
 
     # 提取 Label 相关列到 Pandas（兼容 dask 和 pandas 输入）
@@ -517,12 +622,13 @@ def build_time_series_samples(
     if hasattr(label_df, "compute"):
         label_df = label_df.compute()
     label_df[date_col] = pd.to_datetime(label_df[date_col])
-    
+
     # 核心：二分类处理
-    # RV（已实现波动率）恒为非负数，">0" 会让所有样本标签都为 1，
-    # 因此以中位数为界：高于中位数视为高波动 (1)，否则为 (0)
-    threshold = label_df[label_col].median()
-    print(f"   ...二分类阈值 ({label_col} 中位数): {threshold:.6f}")
+    # threshold 为 None 时取中位数（适用于 RV 这类恒非负、无自然零点的指标）；
+    # 超额收益等有自然零点的指标应显式传 threshold=0.0
+    if threshold is None:
+        threshold = label_df[label_col].median()
+    print(f"   ...二分类阈值 ({label_col}): {threshold:.6f}")
     label_df['target'] = (label_df[label_col] > threshold).astype(int)
     
     # 每天每个股票只有一个 Label

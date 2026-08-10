@@ -97,6 +97,23 @@ def fetch_name_sector(ticker: str, fallback_sector: str):
     return name, sector
 
 
+def fetch_sp500(start: str, end: str, output: str):
+    """抓取 S&P 500 指数 (^GSPC) 日线，产出 date, SP500_RET 两列，用于计算超额收益标签。"""
+    print(f"Fetching ^GSPC (S&P 500) {start} ~ {end} ...")
+    hist = yf.Ticker("^GSPC").history(start=start, end=end, auto_adjust=True)
+    if hist.empty:
+        raise RuntimeError("^GSPC 下载失败或无数据，请检查网络连接。")
+    hist = hist.reset_index()
+    hist['SP500_RET'] = hist['Close'].pct_change()
+    hist = hist.dropna(subset=['SP500_RET'])
+    df = pd.DataFrame({
+        'date': hist['Date'].dt.strftime('%Y-%m-%d'),
+        'SP500_RET': hist['SP500_RET'],
+    })
+    df.to_csv(output, index=False)
+    print(f"✅ 已写出 {output}: {len(df)} 行, {df['date'].min()} ~ {df['date'].max()}")
+
+
 def main():
     parser = argparse.ArgumentParser(description="抓取扩展 ticker universe 的股票日线数据")
     parser.add_argument('--start', default='2021-01-01', help='开始日期')
@@ -106,7 +123,16 @@ def main():
                         help='ticker_sector_map.csv 路径')
     parser.add_argument('--top_n', type=int, default=300, help='取 mention 数前 N 的 ticker')
     parser.add_argument('--sleep', type=float, default=0.12, help='yfinance 请求间隔（秒）')
+    parser.add_argument('--index_output', default='data_processing/sp500.csv',
+                        help='S&P 500 指数输出 CSV（用于超额收益标签）')
+    parser.add_argument('--index_only', action='store_true',
+                        help='只抓取 S&P 500 指数，跳过个股 universe')
     args = parser.parse_args()
+
+    # 指数多抓一个月尾部，保证 2023 年末的样本也能计算未来 20 日收益
+    fetch_sp500(args.start, '2024-02-01', args.index_output)
+    if args.index_only:
+        return
 
     universe = load_universe(args.universe_file, args.top_n)
 

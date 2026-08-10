@@ -18,9 +18,14 @@ from data_processing.scripts.helpers import convert_to_binary_classification
 
 #loading data
 load_dir = "./data_processing"
+# day_dict 有 1 GB，各标签定义共用同一份；只有 samples 按标签定义分目录存放
+# 用法: HAN_SAMPLE_DIR=data_processing/samples_ts_rise python run.py
+sample_dir = os.environ.get("HAN_SAMPLE_DIR", load_dir)
+run_tag = os.environ.get("HAN_RUN_TAG", "default")
+print(f"   ...samples from {sample_dir} (run tag: {run_tag})")
 
-if os.path.exists(os.path.join(load_dir, "config.pt")):
-    config = torch.load(os.path.join(load_dir, "config.pt"), weights_only=False)
+if os.path.exists(os.path.join(sample_dir, "config.pt")):
+    config = torch.load(os.path.join(sample_dir, "config.pt"), weights_only=False)
     E = config['E']
     D = config['D']
     L = config['L']
@@ -28,11 +33,13 @@ if os.path.exists(os.path.join(load_dir, "config.pt")):
 else:
     print("can't find config.pt")
 
-day_dict = torch.load(os.path.join(load_dir, "day_dict.pt"), weights_only=False)
+day_dict_path = os.environ.get("HAN_DAY_DICT", os.path.join(load_dir, "day_dict.pt"))
+print(f"   ...day_dict: {day_dict_path}")
+day_dict = torch.load(day_dict_path, weights_only=False)
 
-train_s = torch.load(os.path.join(load_dir, "train_samples.pt"), weights_only=False)
-val_s   = torch.load(os.path.join(load_dir, "val_samples.pt"), weights_only=False)
-test_s  = torch.load(os.path.join(load_dir, "test_samples.pt"), weights_only=False)
+train_s = torch.load(os.path.join(sample_dir, "train_samples.pt"), weights_only=False)
+val_s   = torch.load(os.path.join(sample_dir, "val_samples.pt"), weights_only=False)
+test_s  = torch.load(os.path.join(sample_dir, "test_samples.pt"), weights_only=False)
 
 print(f"   ...sample loaded: train ({len(train_s)}), validation ({len(val_s)}), test ({len(test_s)})")
 
@@ -42,12 +49,16 @@ train_s_cls = convert_to_binary_classification(train_s, THRESHOLD_RISK)
 val_s_cls   = convert_to_binary_classification(val_s, THRESHOLD_RISK)
 test_s_cls  = convert_to_binary_classification(test_s, THRESHOLD_RISK)
 
-# 第一阶段仅使用文本 embedding，不使用 day features
-D = 0
+# day features（day_dict 里存的是 log1p(当日帖子数)）默认关闭，只用文本 embedding。
+# 设 HAN_USE_DAY_FEAT=1 打开，用 config.pt 里记录的维度 D。
+use_day_feat = os.environ.get("HAN_USE_DAY_FEAT", "0") == "1"
+# D 直接从 day_dict 实际内容推断，避免 config.pt 与打过补丁的 day_dict 不一致
+D = int(next(iter(day_dict.values()))["day_features"].numel()) if use_day_feat else 0
 L = 50
-train_ds = HandlersDataset(train_s_cls, day_dict, L=L, E=E, D=0)
-val_ds   = HandlersDataset(val_s_cls,   day_dict, L=L, E=E, D=0)
-test_ds  = HandlersDataset(test_s_cls,  day_dict, L=L, E=E, D=0)
+print(f"   ...day features: {'ON' if use_day_feat else 'OFF'} (D={D})")
+train_ds = HandlersDataset(train_s_cls, day_dict, L=L, E=E, D=D)
+val_ds   = HandlersDataset(val_s_cls,   day_dict, L=L, E=E, D=D)
+test_ds  = HandlersDataset(test_s_cls,  day_dict, L=L, E=E, D=D)
 
 train_labels = []
 for idx in range(len(train_ds)):
@@ -98,28 +109,33 @@ test_loader = DataLoader(
 
 
 #training
-Num_epoches = 10 #change
+Num_epoches = 20 #change
 if torch.cuda.is_available():
     device = torch.device('cuda')
 elif torch.backends.mps.is_available():
     device = torch.device('mps')
 else:
     device = torch.device('cpu')
-cls_weights = torch.tensor([1.0, 1.4]).to(device)  #change the weights to your preference
-criterion = torch.nn.CrossEntropyLoss(weight=torch.tensor([1.0, 1.4]).to(device))
-# criterion = FocalLoss(alpha=0.25, gamma=1.5, weight=cls_weights)
+# 标签语义：1 = 未来20日异质波动率偏高（HighIVOL），0 = 偏低（LowIVOL）
+# 具体"偏高"相对什么，取决于 rebuild_samples.py 的 --label_def：
+#   ts_rise   相对该行业自身当前的异质波动水平
+#   xs_median 相对同一天其他行业的中位数
+# 类别平衡已由上面的 WeightedRandomSampler 处理，loss 不再叠加类权重
+# （之前 [1.0, 1.4] 在 60% 正类的训练集上进一步推高正类，导致模型全猜一类）
+criterion = torch.nn.CrossEntropyLoss()
 
 model = HAN_Classification(
     embedding_dim=E, 
     gru_hidden_dim=64,        
     gru_num_layers=1,
     prediction_hidden_dim=32,
-    num_classes=2,            
-    dropout=0.4
+    num_classes=2,
+    dropout=0.4,
+    day_feature_dim=D
 )
 model.to(device)
 
-optimizer = torch.optim.AdamW(model.parameters(), lr=5e-5, weight_decay=1e-4)
+optimizer = torch.optim.AdamW(model.parameters(), lr=5e-4, weight_decay=1e-4)
 scheduler = ReduceLROnPlateau(
     optimizer,
     mode='min',
@@ -128,7 +144,7 @@ scheduler = ReduceLROnPlateau(
     min_lr=1e-6
 )
 
-save_dir = "./checkpoints"
+save_dir = f"./checkpoints/{run_tag}"
 
 trainer = ClassificationTrainer(
     model=model,
@@ -144,7 +160,7 @@ trainer = ClassificationTrainer(
 trainer.train(num_epochs=Num_epoches, patience=5)
 
 #testing performance on test set
-model_path = "./checkpoints/best_model.pt"  
+model_path = os.path.join(save_dir, "best_model.pt")
 try:
     model.load_state_dict(torch.load(model_path, map_location=device))
     print(f"✅ Successfully loaded best model from {model_path}")
@@ -157,15 +173,16 @@ all_preds = []
 all_labels = []
 total_loss = 0.0
 
-criterion = torch.nn.CrossEntropyLoss(weight=torch.tensor([1.0, 1.4]).to(device))
+criterion = torch.nn.CrossEntropyLoss()
 
 with torch.no_grad():  
     for batch in test_loader:
         x_text = batch['x_text'].to(device)
         x_mask = batch['x_mask'].to(device)
+        x_day = batch['x_day_feat'].to(device) if 'x_day_feat' in batch else None
         y = batch['y'].to(device).long()
-        
-        logits, _, _ = model(x_text, x_mask)  
+
+        logits, _, _ = model(x_text, x_mask, x_day)
         
         loss = criterion(logits, y)
         total_loss += loss.item()
@@ -180,17 +197,17 @@ all_labels = np.array(all_labels)
 
 cm = confusion_matrix(all_labels, all_preds)
 report = classification_report(
-    all_labels, 
-    all_preds, 
-    target_names=['Safe (0)', 'Risk (1)'],
-    digits=4 
+    all_labels,
+    all_preds,
+    target_names=['LowIVOL (0)', 'HighIVOL (1)'],
+    digits=4
 )
 
-tn, fp, fn, tp = cm.ravel()  
-risk_prec = tp / (tp + fp) if (tp + fp) > 0 else 0.0 
-risk_recall = tp / (tp + fn) if (tp + fn) > 0 else 0.0 
-risk_f1 = 2 * (risk_prec * risk_recall) / (risk_prec + risk_recall) if (risk_prec + risk_recall) > 0 else 0.0
-acc = (tp + tn) / (tp + tn + fp + fn) 
+tn, fp, fn, tp = cm.ravel()
+out_prec = tp / (tp + fp) if (tp + fp) > 0 else 0.0
+out_recall = tp / (tp + fn) if (tp + fn) > 0 else 0.0
+out_f1 = 2 * (out_prec * out_recall) / (out_prec + out_recall) if (out_prec + out_recall) > 0 else 0.0
+acc = (tp + tn) / (tp + tn + fp + fn)
 avg_loss = total_loss / len(test_loader)
 
 print("\n" + "="*50)
@@ -198,14 +215,14 @@ print("📊 Test Set Results")
 print("="*50)
 print(f"Average Loss: {avg_loss:.4f}")
 print(f"Overall Accuracy: {acc:.4%}")
-print(f"Risk Precision: {risk_prec:.4f}")
-print(f"Risk Recall: {risk_recall:.4f}")
-print(f"Risk F1-Score: {risk_f1:.4f}")
+print(f"HighIVOL Precision: {out_prec:.4f}")
+print(f"HighIVOL Recall: {out_recall:.4f}")
+print(f"HighIVOL F1-Score: {out_f1:.4f}")
 
 print("\n🔍 Confusion Matrix:")
-print(f"           Pred_Safe  Pred_Risk")
-print(f"Actual_0:     {tn:<8} {fp:<8}")
-print(f"Actual_1:     {fn:<8} {tp:<8}")
+print(f"           Pred_Low    Pred_High")
+print(f"Actual_0:     {tn:<10} {fp:<8}")
+print(f"Actual_1:     {fn:<10} {tp:<8}")
 
 print("\n📋 Detailed Classification Report:")
 print(report)
