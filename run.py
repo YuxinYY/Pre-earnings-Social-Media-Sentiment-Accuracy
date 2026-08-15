@@ -15,9 +15,11 @@ import importlib
 from model import HAN_Classification
 from train import ClassificationTrainer
 from data_processing.scripts.helpers import convert_to_binary_classification
+import config as project_config
 
 #loading data
-load_dir = "./data_processing"
+# 数据统一放在 config.py 指定的 data_dir（默认外部磁盘 T9）
+load_dir = project_config.args.data_dir
 # day_dict 有 1 GB，各标签定义共用同一份；只有 samples 按标签定义分目录存放
 # 用法: HAN_SAMPLE_DIR=data_processing/samples_ts_rise python run.py
 sample_dir = os.environ.get("HAN_SAMPLE_DIR", load_dir)
@@ -116,10 +118,8 @@ elif torch.backends.mps.is_available():
     device = torch.device('mps')
 else:
     device = torch.device('cpu')
-# 标签语义：1 = 未来20日异质波动率偏高（HighIVOL），0 = 偏低（LowIVOL）
-# 具体"偏高"相对什么，取决于 rebuild_samples.py 的 --label_def：
-#   ts_rise   相对该行业自身当前的异质波动水平
-#   xs_median 相对同一天其他行业的中位数
+# 标签语义：1 = 未来 5 日 CAPM 异质波动率高于全期中位数（HighIVOL），0 = 偏低（LowIVOL）
+# pipeline.py 已按中位数把 ivol_5 二分类，样本标签为 0/1，阈值 0.5 保持原样
 # 类别平衡已由上面的 WeightedRandomSampler 处理，loss 不再叠加类权重
 # （之前 [1.0, 1.4] 在 60% 正类的训练集上进一步推高正类，导致模型全猜一类）
 criterion = torch.nn.CrossEntropyLoss()

@@ -7,8 +7,13 @@
              另外并列跑一个 HistGradientBoosting 作为非神经网络对照
 
 用法:
-    python run_dayfeat.py --label_def xs_demeaned
+    python run_dayfeat.py --label_def capm
     python run_dayfeat.py --label_def all
+
+注意:
+    - 样本由 pipeline.py 直接输出到 data_dir（config.py 指定），
+      不再使用 rebuild_samples 的 samples_<label_def> 目录。
+    - 日级统计量特征由 build_day_features.py 生成，同样位于 data_dir。
 """
 
 import argparse
@@ -22,9 +27,11 @@ from sklearn.metrics import accuracy_score, f1_score, roc_auc_score, confusion_m
 from torch.utils.data import DataLoader, TensorDataset, WeightedRandomSampler
 
 from model import DayStatGRU
+import config as project_config
 
-DAY_FEATURES = "data_processing/day_features.parquet"
-LABEL_DEFS = ["ts_rise", "xs_median", "xs_demeaned"]
+DAY_FEATURES = os.path.join(project_config.args.data_dir, "day_features.parquet")
+SAMPLE_DIR = project_config.args.data_dir  # pipeline.py 输出的 train/val/test_samples.pt
+LABEL_DEFS = ["capm"]
 
 
 def load_sequences(label_def, W=20):
@@ -38,7 +45,7 @@ def load_sequences(label_def, W=20):
 
     out = {}
     for split in ["train", "val", "test"]:
-        samples = torch.load(f"data_processing/samples_{label_def}/{split}_samples.pt",
+        samples = torch.load(os.path.join(SAMPLE_DIR, f"{split}_samples.pt"),
                              weights_only=False)
         X = np.stack([
             np.stack([mat[lut[(sec, pd.Timestamp(d))]] if (sec, pd.Timestamp(d)) in lut else zero
@@ -156,7 +163,7 @@ def run_nn(data, feature_dim, epochs=40, patience=8, seed=0):
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--label_def", default="all")
+    ap.add_argument("--label_def", default="capm", choices=["capm", "all"])
     args = ap.parse_args()
     defs = LABEL_DEFS if args.label_def == "all" else [args.label_def]
 

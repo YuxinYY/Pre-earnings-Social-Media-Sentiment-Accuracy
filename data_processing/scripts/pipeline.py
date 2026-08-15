@@ -1,295 +1,227 @@
-"""
-把 Reddit 文本和股票数据加工成 HAN 模型训练所需的 `.pt` 文件。
-
-作用（行业/sector 级版本）:
-    1. 两遍扫描候选 Reddit CSV（submissions + comments，由 filter_candidate_posts.py 生成）:
-       - 第一遍：分块做 FlashText + GLiNER 匹配，只保留匹配结果和文本统计特征（不存原文），
-         然后按 (sector, date) 取 top DAY_CAP 条（day_dict 每天只用 top 50，先限额可避免
-         对注定被丢弃的帖子跑 embedding，也控制内存）。
-       - 第二遍：只对限额后幸存的帖子回扫原文，供 FinBERT embedding 使用。
-    2. 合并股票价格，标签 = sector 等权组合未来 20 日收益 − 同期 S&P 500 收益（超额收益），>0 为跑赢。
-    3. 按 `(sector, date)` 聚合帖子，构建 sector-day tensor。
-    4. 生成时间序列样本（lookback W=20）并做时间切分。
-    5. 输出 `day_dict.pt`, `train_samples.pt`, `val_samples.pt`, `test_samples.pt`, `config.pt`。
-
-用法:
-    python data_processing/scripts/pipeline.py
-
-说明:
-    - 输入路径由项目根目录下的 `config.py` 控制；`--submissionandcomments_dir` 支持
-      逗号分隔的多个候选 CSV。
-    - 需要从项目根目录运行，以保证相对路径正确。
-    - 第一遍匹配结果缓存于 `data_processing/temp_matched_features.parquet`，
-      比所有输入新时自动复用。
-    - 重跑 embedding 前需手动清空 `data_processing/embedding_output/`（该目录按 chunk 断点续跑）。
-"""
-
-import pandas as pd
-import numpy as np
-from pathlib import Path
-import sys
 import os
+import numpy as np
+from dataset_utils import HandlersDataset
+from focal_loss import FocalLoss
 import torch
+import torch.nn as nn
+from torch.utils.data import DataLoader, WeightedRandomSampler
+from torch.optim.lr_scheduler import ReduceLROnPlateau
+import seaborn as sns
+import matplotlib.pyplot as plt
+from sklearn.metrics import confusion_matrix, classification_report
+import seaborn as sns
+import matplotlib.pyplot as plt
+import importlib
+from model import HAN_Classification
+from train import ClassificationTrainer
+from data_processing.scripts.helpers import convert_to_binary_classification
+import config as project_config
 
-# 将项目根目录加入 sys.path，以便从项目根目录导入 config
-PROJECT_ROOT = Path(__file__).resolve().parents[2]
-sys.path.insert(0, str(PROJECT_ROOT))
+#loading data
+# 数据统一放在 config.py 指定的 data_dir（默认外部磁盘 T9）
+load_dir = project_config.args.data_dir
+# 用法: HAN_SAMPLE_DIR=<data_dir> python run.py（默认取 config.data_dir）
+sample_dir = os.environ.get("HAN_SAMPLE_DIR", load_dir)
+run_tag = os.environ.get("HAN_RUN_TAG", "default")
+print(f"   ...samples from {sample_dir} (run tag: {run_tag})")
 
-import config
-args = config.args
-from helpers import (
-    compute_future_return, perform_local_extraction, count_floats,
-    count_keywords, batch_process_embeddings_stream, build_day_dict_compact,
-    build_time_series_samples, temporal_train_val_test_split, get_device,
+if os.path.exists(os.path.join(sample_dir, "config.pt")):
+    config = torch.load(os.path.join(sample_dir, "config.pt"), weights_only=False)
+    E = config['E']
+    D = config['D']
+    L = config['L']
+    print(f"   ...config: E={E}, D={D}, L={L}")
+else:
+    print("can't find config.pt")
+
+day_dict_path = os.environ.get("HAN_DAY_DICT", os.path.join(load_dir, "day_dict.pt"))
+print(f"   ...day_dict: {day_dict_path}")
+day_dict = torch.load(day_dict_path, weights_only=False)
+
+train_s = torch.load(os.path.join(sample_dir, "train_samples.pt"), weights_only=False)
+val_s   = torch.load(os.path.join(sample_dir, "val_samples.pt"), weights_only=False)
+test_s  = torch.load(os.path.join(sample_dir, "test_samples.pt"), weights_only=False)
+
+print(f"   ...sample loaded: train ({len(train_s)}), validation ({len(val_s)}), test ({len(test_s)})")
+
+# pipeline 产出的样本标签已是 0/1 二分类，阈值 0.5 保持原样
+THRESHOLD_RISK = 0.5
+train_s_cls = convert_to_binary_classification(train_s, THRESHOLD_RISK)
+val_s_cls   = convert_to_binary_classification(val_s, THRESHOLD_RISK)
+test_s_cls  = convert_to_binary_classification(test_s, THRESHOLD_RISK)
+
+# day features（day_dict 里存的是 log1p(当日帖子数)）默认关闭，只用文本 embedding。
+# 设 HAN_USE_DAY_FEAT=1 打开，用 config.pt 里记录的维度 D。
+use_day_feat = os.environ.get("HAN_USE_DAY_FEAT", "0") == "1"
+# D 直接从 day_dict 实际内容推断，避免 config.pt 与打过补丁的 day_dict 不一致
+D = int(next(iter(day_dict.values()))["day_features"].numel()) if use_day_feat else 0
+L = 50
+print(f"   ...day features: {'ON' if use_day_feat else 'OFF'} (D={D})")
+train_ds = HandlersDataset(train_s_cls, day_dict, L=L, E=E, D=D)
+val_ds   = HandlersDataset(val_s_cls,   day_dict, L=L, E=E, D=D)
+test_ds  = HandlersDataset(test_s_cls,  day_dict, L=L, E=E, D=D)
+
+train_labels = []
+for idx in range(len(train_ds)):
+    sample = train_ds[idx]
+    train_labels.append(sample['y'].item())  #
+train_labels = np.array(train_labels)
+
+class_sample_count = np.array([
+    len(np.where(train_labels == 0)[0]),  
+    len(np.where(train_labels == 1)[0])   
+])
+
+class_sample_count = np.maximum(class_sample_count, 1)
+weight = 1. / class_sample_count  
+samples_weight = np.array([weight[t] for t in train_labels])
+samples_weight = torch.from_numpy(samples_weight).float() 
+
+sampler = WeightedRandomSampler(
+    weights=samples_weight,
+    num_samples=len(samples_weight),
+    replacement=True
 )
 
-# 分块读取候选 CSV 的块大小（控制内存）
-CHUNK_SIZE = 1_000_000
-# 每个 (sector, date) 最多保留多少条帖子进入 embedding；day_dict 最终只用 top L=50
-DAY_CAP = 150
+train_loader = DataLoader(
+    train_ds,
+    batch_size=64,
+    sampler=sampler,
+    num_workers=0,    # Mac 上避免多进程 dataloader 问题
+    pin_memory=True,
+    drop_last=True
+)
 
-# filter 常见英文单词 ticker
-BLACK_LIST = [
-    'A', 'AI', 'AL', 'ALL', 'AN', 'AR', 'ARE', 'AS', 'AT', 'BE', 'BY', 'CEO', 'CO', 'COO',
-    'DAY', 'FL', 'FOR', 'FOUR', 'HE', 'HI', 'I', 'IT', 'LOW', 'MA', 'MD', 'MN', 'MO', 'MS',
-    'MT', 'NC', 'NE', 'NEW', 'NM', 'NOW', 'NYC', 'ONE', 'ONTO', 'OR', 'OUT', 'PAY', 'SC',
-    'SD', 'SEE', 'SF', 'SUN', 'TWO', 'TX', 'UP', 'USA', 'WE', 'WY', 'YOU', 'EAT', 'SEND',
-    'BEST', 'HOME', 'SAFE', 'TO', 'DO', 'IN', 'OF', 'GO', 'THE', 'US', 'SO'
-]
+val_loader = DataLoader(
+    val_ds,
+    batch_size=64,
+    shuffle=False,
+    num_workers=0,
+    pin_memory=True
+)
 
-
-def build_sector_returns(df_stocks: pd.DataFrame, ret_col: str = "RET") -> pd.DataFrame:
-    """
-    对每个 sector 构建等权日收益率。
-    返回 DataFrame: [sector, date, sector_RET]
-    """
-    df = df_stocks.copy()
-    df['RET'] = pd.to_numeric(df['RET'], errors='coerce')
-    sector_ret = (
-        df.groupby(['sector', 'date'])['RET']
-        .mean()
-        .reset_index()
-        .rename(columns={'RET': 'sector_RET'})
-    )
-    return sector_ret
+test_loader = DataLoader(
+    test_ds,
+    batch_size=64,
+    shuffle=False,
+    num_workers=0,
+    pin_memory=True
+)
 
 
-def pass1_match_and_features(input_paths, df_stocks, filtered_tickers, names, cache_file):
-    """
-    第一遍扫描：分块匹配 + 计算文本统计特征，不保留原文。
-    返回 DataFrame: [id, date, ticker, sector, score, float_count, keyword_count, word_count]
-    """
-    # 缓存复用条件：sidecar 记录的输入文件列表一致，且缓存比所有输入都新
-    # （仅比较 mtime 不够：用较小输入跑出的缓存可能比大输入更新）
-    meta_file = cache_file + ".meta.json"
-    if os.path.exists(cache_file) and os.path.exists(meta_file):
-        import json as _json
-        with open(meta_file) as f:
-            meta = _json.load(f)
-        cache_mtime = os.path.getmtime(cache_file)
-        inputs_mtime = max([os.path.getmtime(p) for p in input_paths] + [os.path.getmtime(args.stocks)])
-        if meta.get("input_paths") == input_paths and cache_mtime >= inputs_mtime:
-            print(f"检测到有效的匹配缓存: {cache_file}，跳过第一遍扫描")
-            return pd.read_parquet(cache_file)
-        print(f"缓存输入与当前不一致或已过期，重新跑第一遍扫描")
+#training
+Num_epoches = 20 #change
+if torch.cuda.is_available():
+    device = torch.device('cuda')
+elif torch.backends.mps.is_available():
+    device = torch.device('mps')
+else:
+    device = torch.device('cpu')
+# 标签语义：1 = 未来 5 日 CAPM 异质波动率高于全期中位数（HighIVOL），0 = 偏低（LowIVOL）
+# pipeline.py 已按中位数把 ivol_5 二分类，样本标签为 0/1，阈值 0.5 保持原样
+# 类别平衡已由上面的 WeightedRandomSampler 处理，loss 不再叠加类权重
+# （之前 [1.0, 1.4] 在 60% 正类的训练集上进一步推高正类，导致模型全猜一类）
+criterion = torch.nn.CrossEntropyLoss()
 
-    # GLiNER 只加载一次，所有 chunk 复用（绝大多数行 direct hit 后根本不会用到它）
-    from gliner import GLiNER
-    gliner_path = "./gliner_model" if os.path.exists("./gliner_model") else "urchade/gliner_small-v2.1"
-    device = get_device()
-    print(f"Loading GLiNER from {gliner_path} on {device} ...")
-    gliner_model = GLiNER.from_pretrained(gliner_path).to(device)
-    gliner_model.eval()
+model = HAN_Classification(
+    embedding_dim=E, 
+    gru_hidden_dim=64,        
+    gru_num_layers=1,
+    prediction_hidden_dim=32,
+    num_classes=2,
+    dropout=0.4,
+    day_feature_dim=D
+)
+model.to(device)
 
-    stocks_slim = df_stocks[['ticker', 'date', 'sector']]
-    parts = []
-    for path in input_paths:
-        print(f"\n=== 第一遍扫描: {path} ===")
-        for i, chunk in enumerate(pd.read_csv(path, chunksize=CHUNK_SIZE)):
-            chunk['id'] = chunk['id'].astype(str)
-            matched = perform_local_extraction(
-                chunk,
-                "./data_processing/temp_matched_chunk.csv",
-                valid_tickers=filtered_tickers,
-                names=names,
-                black_list=set(BLACK_LIST),
-                model=gliner_model,
-            )
-            if matched.empty:
-                continue
-            matched = matched[matched['matched_ticker'].isin(filtered_tickers)]
-            if matched.empty:
-                continue
+optimizer = torch.optim.AdamW(model.parameters(), lr=5e-4, weight_decay=1e-4)
+scheduler = ReduceLROnPlateau(
+    optimizer,
+    mode='min',
+    factor=0.5,
+    patience=2,
+    min_lr=1e-6
+)
 
-            m = pd.merge(matched, chunk[['id', 'date', 'score']], on='id')
-            m['date'] = pd.to_datetime(m['date']).dt.date
-            m.rename(columns={"matched_ticker": "ticker"}, inplace=True)
-            m = pd.merge(m, stocks_slim, on=['ticker', 'date'], how='inner')
-            if m.empty:
-                continue
+save_dir = f"./checkpoints/{run_tag}"
 
-            m['float_count'] = m['source_text'].apply(count_floats)
-            m['keyword_count'] = m['source_text'].apply(count_keywords)
-            m['word_count'] = m['source_text'].fillna('').apply(lambda x: len(str(x).split()))
-            # 不保留 source_text：16GB 内存放不下全量匹配结果的原文
-            parts.append(m.drop(columns=['source_text']))
-            print(f"  [chunk {i}] 累计匹配行数: {sum(len(p) for p in parts)}")
+trainer = ClassificationTrainer(
+    model=model,
+    train_loader=train_loader,
+    val_loader=val_loader,
+    optimizer=optimizer,
+    scheduler=scheduler,
+    criterion=criterion,
+    device=device,
+    save_path=save_dir
+)
 
-    feat = pd.concat(parts, ignore_index=True)
-    feat.to_parquet(cache_file, index=False)
-    import json as _json
-    with open(cache_file + ".meta.json", "w") as f:
-        _json.dump({"input_paths": input_paths}, f)
-    print(f"第一遍扫描完成: {len(feat)} 匹配行, 已缓存到 {cache_file}")
-    return feat
+trainer.train(num_epochs=Num_epoches, patience=5)
 
+#testing performance on test set
+model_path = os.path.join(save_dir, "best_model.pt")
+try:
+    model.load_state_dict(torch.load(model_path, map_location=device))
+    print(f"✅ Successfully loaded best model from {model_path}")
+except Exception as e:
+    print(f"❌ Load model failed: {e}")
+    exit()
 
-def pass2_fetch_survivor_texts(input_paths, survivor_ids):
-    """
-    第二遍扫描：只对限额后幸存的 id 回扫原文，重建 source_text。
-    返回 DataFrame: [id, source_text]
-    """
-    texts = []
-    for path in input_paths:
-        print(f"\n=== 第二遍扫描: {path} ===")
-        for i, chunk in enumerate(pd.read_csv(path, chunksize=CHUNK_SIZE)):
-            chunk['id'] = chunk['id'].astype(str)
-            hit = chunk[chunk['id'].isin(survivor_ids)]
-            if hit.empty:
-                continue
-            texts.append(hit[['id', 'title', 'selftext', 'body']])
-            print(f"  [chunk {i}] 累计回收文本: {sum(len(t) for t in texts)}")
+model.eval() 
+all_preds = []
+all_labels = []
+total_loss = 0.0
 
-    df_text = pd.concat(texts, ignore_index=True).drop_duplicates('id')
-    df_text['source_text'] = (
-        df_text['title'].fillna('') + ' ' +
-        df_text['selftext'].fillna('') + ' ' +
-        df_text['body'].fillna('')
-    ).str.strip()
-    return df_text[['id', 'source_text']]
+criterion = torch.nn.CrossEntropyLoss()
 
+with torch.no_grad():  
+    for batch in test_loader:
+        x_text = batch['x_text'].to(device)
+        x_mask = batch['x_mask'].to(device)
+        x_day = batch['x_day_feat'].to(device) if 'x_day_feat' in batch else None
+        y = batch['y'].to(device).long()
 
-def main():
-    # ---------- 0. 输入 ----------
-    input_paths = [p.strip() for p in args.submissionandcomments_dir.split(',') if p.strip()]
-    print(f"输入候选 CSV: {input_paths}")
+        logits, _, _ = model(x_text, x_mask, x_day)
+        
+        loss = criterion(logits, y)
+        total_loss += loss.item()
+        
+        preds = torch.argmax(logits, dim=1) 
+        
+        all_preds.extend(preds.cpu().numpy())
+        all_labels.extend(y.cpu().numpy())
 
-    df_stocks = pd.read_csv(args.stocks)  # 列: date, ticker, name, sector, RET, VOL
-    df_stocks['date'] = pd.to_datetime(df_stocks['date']).dt.date
+all_preds = np.array(all_preds)
+all_labels = np.array(all_labels)
 
-    # ---------- 1. 标签：sector 超额收益 ----------
-    sector_ret = build_sector_returns(df_stocks)
-    sector_fut = compute_future_return(
-        sector_ret,
-        window=20,
-        ret_col="sector_RET",
-        ticker_col="sector",
-        date_col="date"
-    )
+cm = confusion_matrix(all_labels, all_preds)
+report = classification_report(
+    all_labels,
+    all_preds,
+    target_names=['LowIVOL (0)', 'HighIVOL (1)'],
+    digits=4
+)
 
-    # S&P 500 未来 20 日收益，超额收益 = sector 收益 − 指数收益
-    df_sp500 = pd.read_csv("./data_processing/sp500.csv")  # 列: date, SP500_RET
-    df_sp500['date'] = pd.to_datetime(df_sp500['date']).dt.date
-    df_sp500['index'] = 'SP500'  # compute_future_return 需要 ticker 列
-    sp500_fut = compute_future_return(
-        df_sp500,
-        window=20,
-        ret_col="SP500_RET",
-        ticker_col="index",
-        date_col="date"
-    ).rename(columns={'future_20d_ret': 'sp500_future_20d_ret'})
+tn, fp, fn, tp = cm.ravel()
+out_prec = tp / (tp + fp) if (tp + fp) > 0 else 0.0
+out_recall = tp / (tp + fn) if (tp + fn) > 0 else 0.0
+out_f1 = 2 * (out_prec * out_recall) / (out_prec + out_recall) if (out_prec + out_recall) > 0 else 0.0
+acc = (tp + tn) / (tp + tn + fp + fn)
+avg_loss = total_loss / len(test_loader)
 
-    sector_label = pd.merge(sector_fut, sp500_fut[['date', 'sp500_future_20d_ret']], on='date', how='left')
-    sector_label['exret_20'] = sector_label['future_20d_ret'] - sector_label['sp500_future_20d_ret']
-    sector_label = sector_label.dropna(subset=['exret_20'])
+print("\n" + "="*50)
+print("📊 Test Set Results")
+print("="*50)
+print(f"Average Loss: {avg_loss:.4f}")
+print(f"Overall Accuracy: {acc:.4%}")
+print(f"HighIVOL Precision: {out_prec:.4f}")
+print(f"HighIVOL Recall: {out_recall:.4f}")
+print(f"HighIVOL F1-Score: {out_f1:.4f}")
 
-    my_tickers = list(df_stocks['ticker'].drop_duplicates())
-    filtered_tickers = [t for t in my_tickers if t not in BLACK_LIST]
+print("\n🔍 Confusion Matrix:")
+print(f"           Pred_Low    Pred_High")
+print(f"Actual_0:     {tn:<10} {fp:<8}")
+print(f"Actual_1:     {fn:<10} {tp:<8}")
 
-    # 公司名(大写) -> ticker 映射，供 GLiNER 实体匹配
-    names = dict(zip(df_stocks['name'].astype(str).str.upper(), df_stocks['ticker']))
-
-    # ---------- 2. 第一遍：分块匹配 + 特征（无原文） ----------
-    feat = pass1_match_and_features(
-        input_paths, df_stocks, filtered_tickers, names,
-        cache_file="./data_processing/temp_matched_features.parquet",
-    )
-    print(f"匹配行数: {len(feat)}, 涉及 {feat['ticker'].nunique()} 个 ticker, {feat['sector'].nunique()} 个 sector")
-
-    # ---------- 3. 按 (sector, date) 限额 ----------
-    # 排序规则与 build_day_dict_compact 一致，保证最终 top-L 选择不受限额影响
-    feat = feat.sort_values(
-        ['sector', 'date', 'keyword_count', 'word_count', 'score'],
-        ascending=[True, True, False, False, False]
-    )
-    capped = feat.groupby(['sector', 'date'], sort=False).head(DAY_CAP).reset_index(drop=True)
-    del feat
-    print(f"限额后保留: {len(capped)} 行 (每天每 sector 最多 {DAY_CAP} 条)")
-
-    # ---------- 4. 第二遍：只对幸存帖子回扫原文 ----------
-    survivor_ids = set(capped['id'])
-    df_text = pass2_fetch_survivor_texts(input_paths, survivor_ids)
-    df = pd.merge(capped, df_text, on='id', how='left')
-    print(f"回扫文本后: {len(df)} 行, 缺文本: {df['source_text'].isna().sum()} 行")
-
-    # 合并 sector 超额收益标签（仅用于把文本行过滤到有标签的日期）
-    df = pd.merge(
-        df,
-        sector_label[['sector', 'date', 'exret_20']],
-        on=['sector', 'date'],
-        how='inner'
-    )
-    df = df.dropna(subset=['exret_20'])
-
-    # ---------- 5. FinBERT embedding ----------
-    # 同一帖子可能匹配多个 ticker（每个 ticker 一行），按 id 去重后再做 embedding，
-    # 最后把 embedding 合并回所有匹配行，避免对同一文本重复推理
-    df_unique = df.drop_duplicates('id').reset_index(drop=True)
-    print(f"去重后待 embedding 帖子数: {len(df_unique)} (匹配行数: {len(df)})")
-
-    embedding_dir = "./data_processing/embedding_output"
-    batch_process_embeddings_stream(
-        df=df_unique,
-        output_dir=embedding_dir,
-        chunk_size=10000,
-        batch_size=256,
-        model_path="./finbert_model",
-    )
-
-    df_result = pd.read_parquet(embedding_dir)
-    df_unique['original_index'] = df_unique.index
-    df_unique = pd.merge(df_unique, df_result, on='original_index', how='left')
-    final_df = pd.merge(df, df_unique[['id', 'embedding']], on='id', how='left')
-
-    # ---------- 6. 构建样本并切分 ----------
-    # 注意：key 从 (ticker, date) 改为 (sector, date)
-    day_dict, E, D = build_day_dict_compact(final_df, ticker_col="sector")
-
-    # sector 级标签数据，保证每天每个 sector 只有一个 label
-    sector_label_df = sector_label[['sector', 'date', 'exret_20']].dropna()
-    samples = build_time_series_samples(
-        sector_label_df,
-        day_dict,
-        W=20,
-        label_col="exret_20",
-        ticker_col="sector",
-        date_col="date",
-        threshold=0.0,  # 超额收益有自然零点：>0 即跑赢大盘
-    )
-    train_s, val_s, test_s = temporal_train_val_test_split(samples, args.val_start_date, args.test_start_date)
-
-    # ---------- 7. 保存 ----------
-    save_dir = "./data_processing"
-    os.makedirs(save_dir, exist_ok=True)
-    print(f"Saving data to {save_dir} ...")
-    torch.save(day_dict, os.path.join(save_dir, "day_dict.pt"))
-    torch.save(train_s, os.path.join(save_dir, "train_samples.pt"))
-    torch.save(val_s, os.path.join(save_dir, "val_samples.pt"))
-    torch.save(test_s, os.path.join(save_dir, "test_samples.pt"))
-    config_dict = {"E": E, "D": D, "L": 50}
-    torch.save(config_dict, os.path.join(save_dir, "config.pt"))
-    print("✅ Sector-level pipeline 完成")
-
-
-if __name__ == '__main__':
-    main()
+print("\n📋 Detailed Classification Report:")
+print(report)

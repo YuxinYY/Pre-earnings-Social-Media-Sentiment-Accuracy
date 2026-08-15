@@ -27,12 +27,97 @@ import multiprocessing
 from gliner import GLiNER
 from flashtext import KeywordProcessor
 from sklearn.feature_extraction.text import TfidfVectorizer
+from sklearn.feature_extraction.text import ENGLISH_STOP_WORDS
 from sklearn.metrics.pairwise import cosine_similarity
 from datetime import timedelta
 from joblib import Parallel, delayed
 from tqdm import tqdm
 from transformers import AutoTokenizer, AutoModel
 import json
+
+# ---------------------------------------------------------------------------
+# 常见英文词表：用于区分"歧义 ticker"（如 ON / CAN / M / T / HOOD / COIN / SHOP）。
+# 歧义 ticker 不再做大小写不敏感匹配，只接受全大写或 $TICKER 形式，
+# 避免把 "move on"、"this can"、"I'M" 里的常见词误判成股票代码。
+# ---------------------------------------------------------------------------
+_COMMON_WORDS_CACHE = None
+
+
+def get_common_words():
+    """构建常见英文词集合（系统词典 + sklearn 停用词 + WSB 口语补充）。结果全局缓存。"""
+    global _COMMON_WORDS_CACHE
+    if _COMMON_WORDS_CACHE is not None:
+        return _COMMON_WORDS_CACHE
+
+    words = set()
+    for path in ("/usr/share/dict/words", "/usr/share/dict/american-english"):
+        try:
+            with open(path, "r", encoding="utf-8", errors="ignore") as f:
+                words.update(w.strip().lower() for w in f if w.strip())
+        except FileNotFoundError:
+            continue
+    words.update(ENGLISH_STOP_WORDS)
+    # WSB / 财经口语补充（部分不在系统词典中）
+    words.update({
+        "moon", "hodl", "fomo", "fud", "meme", "stonk", "tendies", "ape", "apes",
+        "diamond", "paper", "hands", "squeeze", "short", "long", "calls", "puts",
+        "bull", "bear", "yolo", "wsb", "dd", "cfo", "ipo", "etf", "eps",
+        "guidance", "revenue", "volume", "float", "hedge", "margin", "yield",
+    })
+    _COMMON_WORDS_CACHE = words
+    return words
+
+
+# 所有候选 ticker（无歧义 + 多字母歧义 + 单字母）都会接受的 cashtag 形式
+CASHTAG_PATTERN = re.compile(r"\$([A-Za-z]{1,5})\b")
+
+# 公司名归一化：去掉撇号/逗号/括号/& 等，只留大写字母数字和空格
+_COMPANY_NORM_RE = re.compile(r"[^A-Z0-9 ]+")
+
+
+def _norm_name_tokens(s):
+    """"MACY'S INC." -> ["MACYS", "INC"]；"AT&T Inc." -> ["ATT", "INC"]"""
+    return _COMPANY_NORM_RE.sub(" ", s.upper()).split()
+
+
+def _build_short_name_map(names):
+    """公司简称 -> ticker 映射，供 GLiNER 实体兜底匹配。
+
+    对每个全称公司名索引：
+      1. 词级前缀："ROBINHOOD MARKETS, INC." -> "ROBINHOOD"、"ROBINHOOD MARKETS"...
+      2. 首 token 的字符串前缀（长度>=3）：全称 "MACY'S INC" 归一化为 "MACYS"，
+         而 GLiNER 返回 "Macy" -> "MACY"，用字符串前缀把两者连起来。
+
+    返回 dict[归一化简称, ticker]
+    """
+    m = {}
+    for full_name, tic in names.items():
+        tokens = _norm_name_tokens(full_name)
+        if not tokens:
+            continue
+        for i in range(1, len(tokens) + 1):
+            m.setdefault(" ".join(tokens[:i]), tic)
+        t0 = tokens[0]
+        for i in range(3, len(t0)):
+            m.setdefault(t0[:i], tic)
+    return m
+
+
+def _prefilter_short_name_keys(short_name_map, common_words):
+    """选出能进候选预筛选的简称键。
+
+    单字简称若是常见英文词（CAN/ON/META/SHOP/COIN/HOOD...）就不进预筛选，
+    避免 "this can go"、"we shop" 这类帖子白白触发 GLiNER；
+    多词短语（"ON SEMICONDUCTOR"、"WALT DISNEY"）极少误撞日常句式，全部保留。
+    """
+    keys = []
+    for key in short_name_map:
+        words = key.split()
+        if len(words) > 1:
+            keys.append(key)
+        elif words and words[0].lower() not in common_words:
+            keys.append(key)
+    return keys
 
 
 def get_device():
@@ -44,11 +129,25 @@ def get_device():
     return torch.device("cpu")
 
 
-def local_process_comment(keyword_processor, model, comment, names, comment_id, black_list, valid_tickers):
+def local_process_comment(keyword_processor, caps_processor, model, comment, names, comment_id, black_list, valid_tickers, short_name_map=None):
+    """单条帖子匹配：
+    1. keyword_processor: 无歧义 ticker，大小写不敏感直接匹配（GME/TSLA/PLTR...）
+    2. caps_processor:    多字母歧义 ticker，仅全大写时命中（ON/CAN/HOOD/COIN/SHOP...）
+    3. cashtag:           $TICKER 形式，所有 ticker（含单字母 M/T/U/V）均接受
+    4. black_list:        统一最后过滤，对三种命中方式同样生效
+    5. GLiNER:            无直接命中时识别公司名（Macy's→M、AT&T→T、Robinhood→HOOD...）
+    """
     hit_tickers = set()
 
-    direct_hits = keyword_processor.extract_keywords(comment)
-    hit_tickers.update(direct_hits)
+    hit_tickers.update(keyword_processor.extract_keywords(comment))
+    hit_tickers.update(caps_processor.extract_keywords(comment))
+    for raw in CASHTAG_PATTERN.findall(comment):
+        t = raw.upper()
+        if t in valid_tickers:
+            hit_tickers.add(t)
+
+    # 统一黑名单过滤（原来只对 GLiNER 命中生效，现在对直接命中同样生效）
+    hit_tickers = {t for t in hit_tickers if t not in black_list}
 
     # 已直接命中 ticker 时跳过 GLiNER：NER 的主要价值是识别"只提公司名不提 ticker"的帖子，
     # 直接命中后再跑 NER 收益很低，但能省下绝大部分推理时间
@@ -58,15 +157,21 @@ def local_process_comment(keyword_processor, model, comment, names, comment_id, 
     labels = ["company", "stock", "commercial organization"]
     entities = model.predict_entities(str(comment), labels, threshold=0.3)
 
+    if short_name_map is None:
+        short_name_map = {}
+
     for entity in entities:
         text_span = entity['text']
         normalized_text_span = text_span.strip().upper()
         
         if normalized_text_span not in hit_tickers and normalized_text_span not in black_list:
-            if normalized_text_span in names:
-                matched_ticker = names.get(normalized_text_span)
-                if matched_ticker and matched_ticker in valid_tickers: # Validate against original tickers
-                    hit_tickers.add(matched_ticker)
+            # 先试全称精确匹配，再用归一化简称前缀匹配
+            matched_ticker = names.get(normalized_text_span)
+            if matched_ticker is None:
+                short_key = " ".join(_norm_name_tokens(text_span))
+                matched_ticker = short_name_map.get(short_key)
+            if matched_ticker and matched_ticker in valid_tickers: # Validate against original tickers
+                hit_tickers.add(matched_ticker)
 
     return list(hit_tickers)
 
@@ -87,17 +192,64 @@ def perform_local_extraction(
     if black_list is None:
         black_list = set()
 
-    # FlashText：直接命中 ticker
+    # ---- 三档 ticker 分类 ----
+    common_words = get_common_words()
+    clear_tickers = [t for t in valid_tickers if len(t) > 1 and t.lower() not in common_words]
+    multi_ambiguous = [t for t in valid_tickers if len(t) > 1 and t.lower() in common_words]
+    single_letters = [t for t in valid_tickers if len(t) == 1]
+    print(
+        f"[匹配策略] 无歧义直接匹配: {len(clear_tickers)} 个 | "
+        f"多字母歧义(全大写/$): {len(multi_ambiguous)} 个 | "
+        f"单字母(仅$): {len(single_letters)} 个 | "
+        f"歧义列表: {sorted(multi_ambiguous + single_letters)}"
+    )
+
+    # 1) 无歧义 ticker：大小写不敏感直接命中（现状）
     keyword_processor = KeywordProcessor(case_sensitive=False)
-    for t in valid_tickers:
+    for t in clear_tickers:
         keyword_processor.add_keyword(str(t).upper(), t)
 
-    # 候选预筛选：ticker + 公司名。文本里两者都没有的帖子不可能匹配，直接跳过 GLiNER
+    # 2) 多字母歧义 ticker：仅全大写命中
+    caps_processor = KeywordProcessor(case_sensitive=True)
+    for t in multi_ambiguous:
+        caps_processor.add_keyword(str(t).upper(), t)
+
+    # 3) 单字母 ticker：仅 cashtag $X 命中（CASHTAG_PATTERN 全局共享）
+
+    # 公司简称 -> ticker 映射（GLiNER 实体兜底用，如 Robinhood->HOOD、Macy->M）
+    short_name_map = _build_short_name_map(names)
+
+    # 候选预筛选：无歧义 ticker(不区分大小写) + 公司名 + 非歧义简称 + 歧义 ticker 全大写 + cashtag。
+    # 文本里都没有的帖子不可能匹配，直接跳过 GLiNER
     candidate_processor = KeywordProcessor(case_sensitive=False)
-    for t in valid_tickers:
+    for t in clear_tickers:
         candidate_processor.add_keyword(str(t).upper())
     for name in names:
         candidate_processor.add_keyword(str(name).upper())
+    for key in _prefilter_short_name_keys(short_name_map, common_words):
+        candidate_processor.add_keyword(key)
+
+    caps_candidate_processor = KeywordProcessor(case_sensitive=True)
+    for t in multi_ambiguous:
+        caps_candidate_processor.add_keyword(str(t).upper())
+
+    # 文本含标点时（AT&T、Macy's、3M...），归一化（去标点+全大写）后复查一次
+    _PUNCT_CHECK = re.compile(r"[^A-Za-z0-9 $]")
+
+    def _has_candidate(text):
+        if candidate_processor.extract_keywords(text):
+            return True
+        if caps_candidate_processor.extract_keywords(text):
+            return True
+        if CASHTAG_PATTERN.search(text):
+            return True
+        # 归一化后只能用大小写不敏感的处理器：
+        # 大小写信息已丢失，用 caps 处理器会把 "can"/"on" 等常见词全放行
+        if _PUNCT_CHECK.search(text):
+            norm = _COMPANY_NORM_RE.sub(" ", text.upper())
+            if candidate_processor.extract_keywords(norm):
+                return True
+        return False
 
     # GLiNER：识别公司/股票实体。可传入预加载的模型（分块调用时避免重复加载）
     if model is None:
@@ -126,19 +278,21 @@ def perform_local_extraction(
 
     with tqdm(total=total_rows, desc="Local Entity Processing (FlashText + GLiNER)") as pbar:
         for index, row in df_comments_chunk.iterrows():
-            # 候选预筛选：无 ticker/公司名关键词的帖子直接跳过
-            if not candidate_processor.extract_keywords(row['combined_text']):
+            # 候选预筛选：无 ticker/公司名/全大写/cashtag 关键词的帖子直接跳过
+            if not _has_candidate(row['combined_text']):
                 pbar.update(1)
                 continue
 
             matched_tickers = local_process_comment(
                 keyword_processor,
+                caps_processor,
                 model,
                 row['combined_text'],
                 names,
                 row['id'],
                 black_list,
                 valid_tickers,
+                short_name_map=short_name_map,
             )
 
             if matched_tickers:
@@ -208,6 +362,47 @@ def compute_idiosyncratic_vol(
     )
 
     return df[[ticker_col, date_col, name]]
+
+
+def compute_trailing_ivol(
+    df_ret: pd.DataFrame,
+    df_mkt: pd.DataFrame,
+    window: int = 5,
+    beta_window: int = 60,
+    ret_col: str = "sector_RET",
+    mkt_col: str = "SP500_RET",
+    ticker_col: str = "ticker",
+    date_col: str = "date",
+):
+    """
+    Compute trailing (lagged) idiosyncratic volatility:
+    ivol_past_t = std(resid_{t-window+1 .. t})
+
+    与 compute_idiosyncratic_vol 共用同一套 CAPM 滚动 beta 残差模型，只是窗口方向相反：
+    当前 IVOL 水平是未来 5 日 IVOL 最自然的特征，供持久性基线（baseline_ivol.py）复用。
+    返回: [ticker, date, ivol_past]
+    """
+    df = pd.merge(df_ret, df_mkt[[date_col, mkt_col]], on=date_col, how='inner')
+    df = df.sort_values([ticker_col, date_col])
+
+    def _resid(s):
+        m = df.loc[s.index, mkt_col]
+        beta = (
+            s.rolling(beta_window, min_periods=beta_window).cov(m)
+            / m.rolling(beta_window, min_periods=beta_window).var()
+        )
+        alpha = (
+            s.rolling(beta_window, min_periods=beta_window).mean()
+            - beta * m.rolling(beta_window, min_periods=beta_window).mean()
+        )
+        return s - (alpha + beta * m)
+
+    df["_resid"] = df.groupby(ticker_col)[ret_col].transform(_resid)
+    df["ivol_past"] = df.groupby(ticker_col)["_resid"].transform(
+        lambda s: s.rolling(window).std()
+    )
+
+    return df[[ticker_col, date_col, "ivol_past"]]
 
 
 def compute_future_realized_vol(
